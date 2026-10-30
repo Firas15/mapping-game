@@ -1,5 +1,6 @@
 import { COUNTRIES, COUNTRY, type PartyId, PARTY_ORDER } from '../data/countries';
 import { TRAITS, type TraitEffect } from '../data/traits';
+import { REGIONS } from '../data/regions';
 
 export type Parties = [number, number, number, number];
 
@@ -17,15 +18,15 @@ export interface WarEvent {
   defender: string;
   target: string;
   won: boolean;
-  /** defender lost its last territory */
+  /** defender lost its last region */
   eliminated: boolean;
 }
 
 export interface GameState {
-  version: 2;
+  version: 3;
   player: string;
   turn: number;
-  /** territory -> owner country code */
+  /** region id -> owner country code */
   owner: Record<string, string>;
   /** computer countries; the player's own entry is unused */
   ai: Record<string, Nation>;
@@ -55,6 +56,8 @@ export interface GameState {
   allies?: string[];
   /** bought upgrades */
   upgrades?: string[];
+  /** whose capital is held by whom, and for how many turns */
+  capHold: Record<string, { by: string; turns: number }>;
   won: boolean;
   lost: boolean;
 }
@@ -65,8 +68,11 @@ export const ELECTION_EVERY = 8;
 export const WAR_STARTS = 3;
 /** ...and may attack the player from this turn. */
 export const PLAYER_SAFE_UNTIL = 6;
-/** Defence bonus of a country fighting on its own land. */
-export const HOME_BONUS = 0.4;
+/** Defence bonus of a country fighting on its own land, and extra in its capital. */
+export const HOME_BONUS = 0.25;
+export const CAPITAL_BONUS = 0.5;
+/** A country gives up after an enemy holds its capital for this many turns. */
+export const CAPITULATE_AFTER = 3;
 export const SEASONS = ['весна', 'лето', 'осень', 'зима'] as const;
 export const season = (turn: number) => SEASONS[(turn - 1) % 4];
 export const isWinter = (turn: number) => season(turn) === 'зима';
@@ -79,8 +85,8 @@ export function newGame(player: string, hand: string[]): GameState {
   const ai: Record<string, Nation> = {};
   const parties: Record<string, Parties> = {};
   const ruling: Record<string, PartyId> = {};
+  for (const r of REGIONS) owner[r.id] = r.c;
   for (const x of COUNTRIES) {
-    owner[x.code] = x.code;
     ai[x.code] = { army: x.army, money: x.eco * 2, calmUntil: 0 };
     parties[x.code] = [...x.parties];
     ruling[x.code] = topParty(x.parties);
@@ -90,7 +96,7 @@ export function newGame(player: string, hand: string[]): GameState {
     if (x.code !== player) relations[x.code] = ruling[x.code] === ruling[player] ? 20 : 0;
   }
   return {
-    version: 2,
+    version: 3,
     relations,
     allies: [],
     upgrades: [],
@@ -117,6 +123,7 @@ export function newGame(player: string, hand: string[]): GameState {
     events: [],
     pendingEvent: null,
     eventSeen: {},
+    capHold: {},
     won: false,
     lost: false,
   };
@@ -124,9 +131,9 @@ export function newGame(player: string, hand: string[]): GameState {
 
 export const trait = (code: string) => TRAITS[COUNTRY[code].trait];
 export const fx = (code: string): TraitEffect => trait(code).effect;
-export const ownedBy = (s: GameState, nation: string) => COUNTRIES.filter((x) => s.owner[x.code] === nation).map((x) => x.code);
+export const ownedBy = (s: GameState, nation: string) => REGIONS.filter((r) => s.owner[r.id] === nation).map((r) => r.id);
 export const owned = (s: GameState) => ownedBy(s, s.player);
-export const alive = (s: GameState, nation: string) => COUNTRIES.some((x) => s.owner[x.code] === nation);
+export const alive = (s: GameState, nation: string) => REGIONS.some((r) => s.owner[r.id] === nation);
 export const playerRuling = (s: GameState) => s.ruling[s.player];
 
 export const armyOf = (s: GameState, nation: string) => (nation === s.player ? s.army : s.ai[nation].army);
@@ -135,7 +142,7 @@ export function addArmy(s: GameState, nation: string, delta: number) {
   else s.ai[nation].army = Math.max(0, Math.round(s.ai[nation].army + delta));
 }
 
-const SAVE_KEY = 'mapping-save-v2';
+const SAVE_KEY = 'mapping-save-v3';
 export function save(s: GameState) {
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch { /* storage may be blocked */ }
 }
@@ -143,11 +150,7 @@ export function load(): GameState | null {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     const s = raw ? (JSON.parse(raw) as GameState) : null;
-    if (!s || s.version !== 2 || !COUNTRY[s.player] || s.lost) return null;
-    // saves from before diplomacy and upgrades existed
-    s.relations ??= Object.fromEntries(COUNTRIES.filter((x) => x.code !== s.player).map((x) => [x.code, 0]));
-    s.allies ??= [];
-    s.upgrades ??= [];
+    if (!s || s.version !== 3 || !COUNTRY[s.player] || s.lost) return null;
     return s;
   } catch {
     return null;

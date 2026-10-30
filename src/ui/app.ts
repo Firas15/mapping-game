@@ -1,9 +1,10 @@
 import { COUNTRIES, COUNTRY, PARTIES, flagUrl, type CountryDef } from '../data/countries';
 import { TRAITS } from '../data/traits';
-import { buildGraph } from '../game/graph';
+import { buildGraph, seaPairs } from '../game/graph';
+import { CAPITAL, REGION, REGIONS, regionTitle, regionsOf } from '../data/regions';
 import { CARD, drawHand, playCard } from '../game/cards';
 import {
-  type GameState, PLAYER_SAFE_UNTIL, armyOf, clearSave, load, newGame, owned, ownedBy, save, season, trait,
+  type GameState, CAPITULATE_AFTER, PLAYER_SAFE_UNTIL, armyOf, clearSave, load, newGame, owned, ownedBy, save, season, trait,
 } from '../game/state';
 import {
   RECRUIT_SIZE, annex, annexCost, attack, attackPower, canAnnexHere, chanceOf, defensePower, endTurn, front,
@@ -19,6 +20,7 @@ import { icon } from './icons';
 import { politicsBlock } from './politics';
 import { EVENT, resolveEvent } from '../game/events';
 import { Tutorial, tutorialDone } from './tutorial';
+import { isMuted, play, setMuted } from './sound';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const fmt = (n: number) => Math.round(n).toLocaleString('ru-RU');
@@ -44,10 +46,18 @@ export class App {
 
   constructor(topo: unknown) {
     this.map = new MapView($('#map-host'), topo, (c) => this.onSelect(c));
-    buildGraph(this.map.landPairs());
+    buildGraph(this.map.landPairs(), this.map.centroid);
+    this.map.setSeaLinks(seaPairs);
     $('#zoom-in').onclick = () => this.map.zoomBy(1.6);
     $('#zoom-out').onclick = () => this.map.zoomBy(1 / 1.6);
     $('#zoom-home').onclick = () => this.focusHome();
+    const muteBtn = $('#mute');
+    const drawMute = () => {
+      muteBtn.innerHTML = icon(isMuted() ? 'mute' : 'sound');
+      muteBtn.setAttribute('aria-label', isMuted() ? 'Включить звук' : 'Выключить звук');
+    };
+    muteBtn.onclick = () => { setMuted(!isMuted()); drawMute(); play('click'); };
+    drawMute();
     this.showStart();
   }
 
@@ -60,7 +70,7 @@ export class App {
     this.renderStart();
     this.updateMap();
     requestAnimationFrame(() => {
-      if (isMobile()) this.map.focus(this.picked!, { duration: 0, padBottom: $('#start').offsetHeight + 8 });
+      if (isMobile()) this.map.focus(regionIds(this.picked!), { duration: 0, padBottom: $('#start').offsetHeight + 8 });
       else this.map.focusPoint([14, 50], 2.4, 0, 380);
     });
   }
@@ -90,6 +100,7 @@ export class App {
           <div class="stat">${icon('swords', 16)}<span>Армия</span><b>${p.army}</b></div>
           <div class="stat">${icon('coins', 16)}<span>Доход</span><b>${p.eco}</b></div>
         </div>
+        <div class="muted small">Областей: ${regionsOf(p.code).length}. Столица: ${REGION[CAPITAL[p.code]].name}</div>
         <div class="trait"><div class="muted small">Особенность</div><b>${TRAITS[p.trait].name}</b><div>${TRAITS[p.trait].text}</div></div>
         ${politicsBlock([...p.parties], topPartyOf(p), p.gov)}
         <button class="btn primary wide" id="play">Играть: ${p.name}</button>
@@ -106,7 +117,7 @@ export class App {
     $('#start').querySelectorAll<HTMLButtonElement>('[data-pick]').forEach((b) => {
       b.onclick = () => {
         this.onSelect(b.dataset.pick!);
-        this.map.focus(b.dataset.pick!, isMobile() ? { padBottom: $('#start').offsetHeight } : { padLeft: 380 });
+        this.map.focus(regionIds(b.dataset.pick!), isMobile() ? { padBottom: $('#start').offsetHeight } : { padLeft: 380 });
       };
     });
     const play = document.getElementById('play');
@@ -116,6 +127,7 @@ export class App {
   }
 
   private startGame(code: string) {
+    play('turn');
     this.s = newGame(code, drawHand());
     save(this.s);
     this.enterGame();
@@ -124,17 +136,25 @@ export class App {
 
   private enterGame() {
     document.body.dataset.mode = 'game';
-    this.selected = this.s!.player;
+    this.selected = this.home();
     this.renderAll();
-    requestAnimationFrame(() => this.focusHome());
+    setTimeout(() => this.focusHome(), 60); // after the panels have taken their place
     if (this.s!.pendingEvent) this.showEvent();
+  }
+
+  /** A region of the player's to fall back on: the capital if still held. */
+  private home(): string {
+    const s = this.s!;
+    const cap = CAPITAL[s.player];
+    return s.owner[cap] === s.player ? cap : owned(s)[0] ?? cap;
   }
 
   private focusHome() {
     const code = this.s?.player ?? this.picked;
     if (!code) return;
     const panel = $('#panel').getBoundingClientRect();
-    this.map.focus(code, isMobile() ? { padBottom: panel.height } : { padRight: this.s ? panel.width + 24 : 0 });
+    const ids = this.s ? owned(this.s) : regionIds(code);
+    this.map.focus(ids.length ? ids : regionIds(code), isMobile() ? { padBottom: panel.height } : { padRight: this.s ? panel.width + 24 : 0 });
   }
 
   // ---------- selection ----------
@@ -142,12 +162,14 @@ export class App {
   private onSelect(code: string | null) {
     if (!this.s) {
       if (!code) return;
-      this.picked = code;
+      this.picked = REGION[code]?.c ?? code;
+      play('select');
       this.renderStart();
       this.updateMap();
       return;
     }
-    this.selected = code ?? this.s.player;
+    this.selected = code ?? this.home();
+    if (code) play('select');
     this.renderPanel();
     this.updateMap();
   }
@@ -155,17 +177,19 @@ export class App {
   private targets(): Set<string> {
     const s = this.s;
     if (!s) return new Set();
-    return new Set(COUNTRIES.map((c) => c.code).filter((c) => front(s, c)));
+    return new Set(REGIONS.map((r) => r.id).filter((r) => front(s, r)));
   }
 
   private updateMap() {
     const s = this.s;
     this.map.update({
-      owner: s ? s.owner : Object.fromEntries(COUNTRIES.map((c) => [c.code, c.code])),
+      owner: s ? s.owner : Object.fromEntries(REGIONS.map((r) => [r.id, r.c])),
       player: s ? s.player : null,
-      selected: s ? this.selected : this.picked,
+      selected: s ? (this.selected ? [this.selected] : []) : this.picked ? regionIds(this.picked) : [],
       targets: this.targets(),
       allies: new Set(s?.allies ?? []),
+      capHold: s?.capHold,
+      capitulateAfter: CAPITULATE_AFTER,
     });
   }
 
@@ -222,18 +246,30 @@ export class App {
 
   private renderPanel() {
     const s = this.s!;
-    const code = this.selected ?? s.player;
-    const c = COUNTRY[code];
+    const code = this.selected ?? this.home();
+    const region = REGION[code];
+    const homeland = COUNTRY[region.c];
     const ownerCode = s.owner[code];
     const mine = ownerCode === s.player;
-    const tr = trait(code);
+    const tr = trait(region.c);
     const f = front(s, code);
-    const nation = mine ? s.player : ownerCode;
+    const nation = ownerCode;
+    const title = regionTitle(code);
+    const single = regionsOf(region.c).length === 1;
 
-    let status = 'Независимая страна';
-    if (code === s.player) status = 'Ваша столица';
-    else if (mine) status = 'Ваша территория';
-    else if (ownerCode !== code) status = `Под контролем: ${COUNTRY[ownerCode].name}`;
+    // "Бавария · Германия · столица", and who holds it if it changed hands
+    const parts = [single ? '' : homeland.name, region.capital ? 'столица' : 'область'].filter(Boolean);
+    let status = parts.join(' · ');
+    if (ownerCode !== region.c) status += ` · ${mine ? 'захвачена вами' : `занята: ${COUNTRY[ownerCode].name}`}`;
+
+    // capitulation countdown when this capital is occupied
+    let siege = '';
+    const hold = region.capital && ownerCode !== region.c ? s.capHold[region.c] : undefined;
+    if (hold) {
+      const left = CAPITULATE_AFTER - hold.turns;
+      siege = `<div class="threat ${hold.by === s.player ? 'good' : region.c === s.player ? 'bad' : 'mid'}">${icon('flag', 14)}
+        Столица занята. ${homeland.name} капитулирует через ${left} ход., если её не отобьют</div>`;
+    }
 
     const armyLabel = mine ? 'Ваша армия' : 'Армия страны';
     const armyValue = armyOf(s, ownerCode);
@@ -272,7 +308,7 @@ export class App {
             <div class="battle-row"><span>Ваша сила</span><b>${fmt(attackPower(s, f, code))}</b></div>
             ${help > 0 ? `<div class="muted small">${icon('handshake', 14)} Союзники помогают: +${fmt(help)}</div>` : ''}
             <div class="battle-row"><span>Оборона</span><b>${fmt(defensePower(s, code))}</b></div>
-            ${ownerCode === code ? `<div class="muted small">${icon('castle', 14)} Родная земля: +40% к обороне</div>` : ''}
+            ${ownerCode === region.c ? `<div class="muted small">${icon('castle', 14)} Родная земля: +${region.capital ? 75 : 25}% к обороне${region.capital ? ' (столица)' : ''}</div>` : ''}
             ${f === 'sea' ? `<div class="muted small">${icon('dove', 14)} Морской десант${trait(s.player).effect.seaMaster || hasUpgrade(s, 'navy') ? ' без штрафа' : ': −25% к силе'}</div>` : ''}
             <div class="chance"><div class="chance-bar"><i style="width:${ch}%"></i></div><span>Шанс победы <b>${ch}%</b></span></div>
           </div>
@@ -290,15 +326,16 @@ export class App {
     const electionNote = nation === s.player ? `Ходов до выборов: ${s.nextElection - s.turn}` : '';
     $('#panel').innerHTML = `
       <div class="panel-head">
-        <img src="${flagUrl(code)}" alt="Флаг: ${c.name}" class="flag-l">
-        <div><h2>${c.name}</h2><div class="muted">${status}</div></div>
+        <img src="${flagUrl(ownerCode)}" alt="Флаг: ${COUNTRY[ownerCode].name}" class="flag-l">
+        <div><h2>${region.capital ? `${icon('star', 16)} ` : ''}${title}</h2><div class="muted">${status}</div></div>
       </div>
       <div class="stats">
         <div class="stat">${icon('swords', 16)}<span>${armyLabel}</span><b>${fmt(armyValue)}</b></div>
-        <div class="stat">${icon('coins', 16)}<span>Доход</span><b>${c.eco}</b></div>
+        <div class="stat">${icon('coins', 16)}<span>Доход области</span><b>${region.eco}</b></div>
       </div>
-      ${lands > 1 ? `<div class="muted small">${mine ? 'У вас' : `У страны ${COUNTRY[ownerCode].name}`} территорий: ${lands}. Армия защищает их все.</div>` : ''}
-      <div class="trait"><div class="muted small">Особенность</div><b>${tr.name}</b><div>${tr.text}</div></div>
+      <div class="muted small">${mine ? 'У вас' : `У страны ${COUNTRY[ownerCode].name}`} областей: ${lands}. Армия защищает их все, потеря каждой ослабляет страну.</div>
+      ${siege}
+      <div class="trait"><div class="muted small">Особенность: ${homeland.name}</div><b>${tr.name}</b><div>${tr.text}</div></div>
       ${threat}
       <div class="actions">${actions}</div>
       ${politicsBlock(s.parties[nation], s.ruling[nation], COUNTRY[nation].gov, electionNote)}
@@ -308,14 +345,15 @@ export class App {
       const b = document.getElementById(id);
       if (b) b.onclick = () => (b.dataset.off ? this.toast(why, 'bad') : fn());
     };
-    on('recruit', () => this.act(() => { recruit(s); }), 'Не хватает денег');
+    on('recruit', () => this.act(() => { if (recruit(s)) play('recruit'); }), 'Не хватает денег');
     on('attack', () => this.doAttack(code), s.attacksLeft <= 0 ? 'Атаки на этот ход закончились' : 'Слишком маленькая армия');
     on('annex', () => this.act(() => {
-      if (annex(s, code)) this.toast(`Мирно присоединено: ${c.name}`, 'good');
+      const who = COUNTRY[ownerCode].name;
+      if (annex(s, code)) { this.toast(`Мирно присоединено: ${who}`, 'good'); play('ally'); }
     }), `Нужно ${annexCost(s, code)} влияния`);
-    on('improve', () => this.act(() => { improveRelations(s, ownerCode); }), `Нужно ${improveCost(s, ownerCode)} влияния`);
+    on('improve', () => this.act(() => { if (improveRelations(s, ownerCode)) play('click'); }), `Нужно ${improveCost(s, ownerCode)} влияния`);
     on('ally', () => this.act(() => {
-      if (proposeAlliance(s, ownerCode)) this.toast(`Союз заключён: ${COUNTRY[ownerCode].name}`, 'good');
+      if (proposeAlliance(s, ownerCode)) { this.toast(`Союз заключён: ${COUNTRY[ownerCode].name}`, 'good'); play('ally'); }
     }), relation(s, ownerCode) < ALLY_MIN ? `Нужны отношения от +${ALLY_MIN}` : `Нужно ${ALLIANCE_COST} влияния`);
     on('break', () => this.act(() => { breakAlliance(s, ownerCode); }), '');
   }
@@ -381,6 +419,7 @@ export class App {
           if (u.effect.extraAttacks) s.attacksLeft += u.effect.extraAttacks;
         });
         this.toast(`Изучено: ${u.name}`, 'good');
+        play('buy');
         this.showUpgrades();
       };
     });
@@ -389,9 +428,12 @@ export class App {
   private doAttack(code: string) {
     const s = this.s!;
     this.act(() => {
+      const wasCapital = CAPITAL[s.owner[code]] === code;
       const r = attack(s, code);
-      if (r === 'win') this.toast(`Победа! Захвачено: ${COUNTRY[code].name}`, 'good');
-      if (r === 'loss') this.toast(`Атака отбита: ${COUNTRY[code].name}`, 'bad');
+      if (r === 'win') play(wasCapital ? 'capital' : 'win');
+      if (r === 'loss') play('loss');
+      if (r === 'win') this.toast(`Победа! Захвачено: ${regionTitle(code)}`, 'good');
+      if (r === 'loss') this.toast(`Атака отбита: ${regionTitle(code)}`, 'bad');
     });
   }
 
@@ -421,6 +463,7 @@ export class App {
         const why = CARD[id].blocked?.(s);
         if (why) return this.toast(why, 'bad');
         this.act(() => { playCard(s, id); });
+        play('card');
         this.toast(`Решение принято: ${CARD[id].title}`, 'good');
       };
     });
@@ -430,8 +473,9 @@ export class App {
       this.map.flash(s.events.filter((e) => e.won).map((e) => e.target));
       if (s.won || s.lost) return;
       this.toast(`Ход ${s.turn}, ${season(s.turn)}. Доход ${signed(income)}`, 'info');
+      play('turn');
       const report = () => {
-        if (s.events.some((e) => e.defender === s.player)) this.showTurnReport();
+        if (s.events.some((e) => e.defender === s.player)) { play('alarm'); this.showTurnReport(); }
         else if (s.events.length) this.toast(`Сражений в Европе: ${s.events.length}. Подробности в журнале`, 'info');
       };
       if (s.pendingEvent) this.showEvent(report);
@@ -444,6 +488,7 @@ export class App {
     const s = this.s!;
     const ev = s.pendingEvent ? EVENT[s.pendingEvent] : null;
     if (!ev) return after?.();
+    setTimeout(() => play('event'), 250);
     const options = ev.options.map((o, i) => {
       const fx = o.effects(s);
       return `
@@ -462,6 +507,7 @@ export class App {
       <div class="event-opts">${options}</div>`, 'event');
     m.querySelectorAll<HTMLButtonElement>('[data-opt]').forEach((b) => {
       b.onclick = () => {
+        play('click');
         this.closeModal();
         this.act(() => resolveEvent(s, Number(b.dataset.opt)));
         after?.();
@@ -482,7 +528,7 @@ export class App {
         return `
           <li class="${tone}">
             <img src="${flagUrl(e.attacker)}" alt="" class="flag-s">
-            <span>${COUNTRY[e.attacker].name} → ${COUNTRY[e.target].name}</span>
+            <span>${COUNTRY[e.attacker].name} → ${regionTitle(e.target)}</span>
             <b>${result}</b>
           </li>`;
       }).join('');
@@ -496,6 +542,7 @@ export class App {
 
   private showLose() {
     const s = this.s!;
+    play('defeat');
     const m = this.modal(`
       <h3>Ваша страна пала</h3>
       <p class="muted">${COUNTRY[s.player].name} продержалась ходов: ${s.turn}. Попробуйте другую стратегию или страну.</p>
@@ -544,6 +591,7 @@ export class App {
 
   private showWin() {
     const s = this.s!;
+    play('victory');
     const m = this.modal(`
       <div class="win-icon">${icon('trophy', 36)}</div>
       <h3>Европа объединена!</h3>
@@ -561,3 +609,5 @@ function topPartyOf(c: CountryDef) {
   const order = ['dem', 'con', 'soc', 'nat'] as const;
   return order[c.parties.indexOf(Math.max(...c.parties))];
 }
+
+const regionIds = (country: string) => regionsOf(country).map((r) => r.id);

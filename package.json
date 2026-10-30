@@ -20,6 +20,7 @@
     "@types/topojson-specification": "^1.0.5",
     "polygon-clipping": "^0.15.7",
     "topojson-server": "^3.0.1",
+    "topojson-simplify": "^3.0.3",
     "typescript": "~7.0.2",
     "vite": "^8.3.5",
     "world-atlas": "^2.0.2"

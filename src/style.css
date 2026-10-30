@@ -71,9 +71,20 @@ img { display: block; }
 .map .graticule { fill: none; stroke: var(--grid); stroke-width: .6; vector-effect: non-scaling-stroke; }
 .map .context path { fill: var(--land-off); stroke: var(--sea); stroke-width: .7; vector-effect: non-scaling-stroke; }
 .map .countries path {
-  stroke: #0b1424; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer;
+  stroke: rgba(11, 20, 36, .45); stroke-width: .7; vector-effect: non-scaling-stroke; cursor: pointer;
   stroke-linejoin: round; transition: filter .15s, fill .4s;
 }
+.map .nations path { fill: none; stroke: #0b1424; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; stroke-linejoin: round; }
+.map .capitals { pointer-events: none; }
+.map .cap circle { fill: #d6403a; stroke: #fff; stroke-width: 1.6; }
+.map .cap path { fill: #fff; }
+.map .cap.occupied circle { fill: #2b2f3a; stroke: #f0b94d; animation: capwarn 1.2s ease-in-out infinite; }
+.map .cap.occupied path { fill: #f0b94d; }
+.map .cap-left {
+  font: 800 12px Manrope, sans-serif; fill: #f0b94d; paint-order: stroke;
+  stroke: rgba(8, 14, 26, .9); stroke-width: 3px;
+}
+@keyframes capwarn { 50% { stroke-width: 3.2; } }
 .map .countries path:hover { filter: brightness(1.22) saturate(1.1); }
 .map .countries path.ally { stroke: #7be0a6; stroke-width: 1.6; stroke-dasharray: 5 3; }
 .map .countries path.flash { animation: flash .65s ease-in-out 4; }

@@ -1,4 +1,5 @@
 import { COUNTRIES, COUNTRY } from '../data/countries';
+import { REGIONS, regionTitle } from '../data/regions';
 import { type GameState, PLAYER_SAFE_UNTIL, WAR_STARTS, alive, fx, owned } from './state';
 import {
   RECRUIT_SIZE, baseIncome, battle, chanceOf, clamp, frontOf, log, recruitCostOf, shiftParty, upkeepOf,
@@ -37,8 +38,8 @@ function pickTarget(s: GameState, nation: string): string | null {
   const playerSize = owned(s).length;
   let best: string | null = null;
   let bestScore = -Infinity;
-  for (const x of COUNTRIES) {
-    const target = x.code;
+  for (const x of REGIONS) {
+    const target = x.id;
     const defender = s.owner[target];
     if (defender === nation || !frontOf(s, nation, target)) continue;
     if (defender === s.player && s.turn < PLAYER_SAFE_UNTIL) continue;
@@ -48,8 +49,11 @@ function pickTarget(s: GameState, nation: string): string | null {
     const chance = chanceOf(s, nation, target);
     if (chance < NERVE[ruling]) continue;
     // a growing player looks like a threat worth stopping
-    const threat = defender === s.player ? Math.min(12, Math.max(0, playerSize - 3) * 2) - rel * 0.3 : 0;
-    const score = chance + x.eco * 0.3 + threat + Math.random() * 10;
+    const threat = defender === s.player ? Math.min(12, Math.max(0, playerSize - 8)) - rel * 0.3 : 0;
+    // capitals end wars; lost home regions are worth taking back
+    const capital = x.capital && x.c === defender ? 15 : 0;
+    const homecoming = x.c === nation ? 25 : 0;
+    const score = chance + x.eco * 0.5 + threat + capital + homecoming + Math.random() * 10;
     if (score > bestScore) {
       bestScore = score;
       best = target;
@@ -84,7 +88,7 @@ export function aiTurn(s: GameState) {
     shiftParty(s.parties[nation], 'nat', r.won ? 2 : -1);
 
     const a = COUNTRY[nation].name;
-    const t = COUNTRY[target].name;
+    const t = regionTitle(target);
     if (r.defender === s.player) {
       changeRelation(s, nation, -30);
       if (r.won) {
@@ -95,8 +99,8 @@ export function aiTurn(s: GameState) {
       }
       shiftParty(s.parties[s.player], 'nat', 2); // being attacked rallies the nation
     } else if (r.won) {
-      log(s, `${a} захватывает: ${t}`, 'info');
-      if (r.eliminated && r.defender !== target) log(s, `${COUNTRY[r.defender].name} больше не существует`, 'info');
+      log(s, `${a} захватывает: ${t} (${COUNTRY[r.defender].name})`, 'info');
+      if (r.eliminated) log(s, `${COUNTRY[r.defender].name} больше не существует`, 'info');
     }
   }
 }
