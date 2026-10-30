@@ -1,0 +1,36 @@
+{
+  "name": "mapping-game",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "build:map": "node scripts/build-map.mjs",
+    "build:flags": "node scripts/copy-flags.mjs"
+  },
+  "devDependencies": {
+    "@types/d3-geo": "^3.1.1",
+    "@types/d3-selection": "^3.0.12",
+    "@types/d3-transition": "^3.0.9",
+    "@types/d3-zoom": "^3.0.9",
+    "@types/geojson": "^7946.0.16",
+    "@types/topojson-client": "^3.1.5",
+    "@types/topojson-specification": "^1.0.5",
+    "polygon-clipping": "^0.15.7",
+    "topojson-server": "^3.0.1",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.5",
+    "world-atlas": "^2.0.2"
+  },
+  "dependencies": {
+    "d3-geo": "^3.1.1",
+    "d3-selection": "^3.0.0",
+    "d3-transition": "^3.0.1",
+    "d3-zoom": "^3.0.0",
+    "flag-icons": "^7.6.0",
+    "lucide": "^1.64.0",
+    "topojson-client": "^3.1.0"
+  }
+}

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1424" />
+    <meta name="description" content="Mapping — пошаговая стратегия: выберите страну и объедините Европу." />
+    <title>Mapping</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  </head>
+  <body data-mode="pick">
+    <header id="hud" class="hud"></header>
+    <main id="stage">
+      <div id="map-host"></div>
+      <div class="map-ctrl">
+        <button class="icon-btn" id="zoom-in" aria-label="Приблизить"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+        <button class="icon-btn" id="zoom-out" aria-label="Отдалить"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+        <button class="icon-btn" id="zoom-home" aria-label="К моей стране"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></button>
+      </div>
+      <aside id="start" class="side start"></aside>
+      <aside id="panel" class="side panel"></aside>
+    </main>
+    <footer id="decisions" class="decisions"></footer>
+    <div id="toasts" aria-live="polite"></div>
+    <div id="tutorial"></div>
+    <div id="modal"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
