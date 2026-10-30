@@ -3,10 +3,11 @@ import { TRAITS } from '../data/traits';
 import { buildGraph } from '../game/graph';
 import { CARD, drawHand, playCard } from '../game/cards';
 import {
-  type GameState, MAX_ATTACKS, clearSave, load, newGame, owned, save, season, trait,
+  type GameState, MAX_ATTACKS, PLAYER_SAFE_UNTIL, armyOf, clearSave, load, newGame, owned, ownedBy, save,
+  season, trait,
 } from '../game/state';
 import {
-  RECRUIT_SIZE, annex, annexCost, attack, attackPower, defensePower, endTurn, front, grossIncome,
+  RECRUIT_SIZE, annex, annexCost, attack, attackPower, chanceOf, defensePower, endTurn, front, grossIncome,
   influenceGain, netIncome, recruit, recruitCost, upkeep, winChance,
 } from '../game/rules';
 import { MapView } from '../map/MapView';
@@ -169,6 +170,7 @@ export class App {
     this.renderDecisions();
     this.updateMap();
     if (this.s?.won) this.showWin();
+    else if (this.s?.lost) this.showLose();
   }
 
   private act(fn: () => void) {
@@ -223,8 +225,21 @@ export class App {
     else if (mine) status = 'Ваша территория';
     else if (ownerCode !== code) status = `Под контролем: ${COUNTRY[ownerCode].name}`;
 
-    const armyLabel = mine ? 'Ваша армия' : 'Гарнизон';
-    const armyValue = mine ? s.army : s.garrison[code];
+    const armyLabel = mine ? 'Ваша армия' : 'Армия страны';
+    const armyValue = armyOf(s, ownerCode);
+    const lands = ownedBy(s, ownerCode).length;
+
+    // how dangerous this country is for the player right now
+    let threat = '';
+    if (!mine) {
+      const odds = owned(s).map((t) => chanceOf(s, ownerCode, t));
+      const worst = odds.length ? Math.max(...odds) : 0;
+      if (worst > 0) {
+        const level = worst >= 60 ? 'bad' : worst >= 35 ? 'mid' : 'good';
+        const when = s.turn < PLAYER_SAFE_UNTIL ? ` (не раньше ${PLAYER_SAFE_UNTIL}-го хода)` : '';
+        threat = `<div class="threat ${level}">${icon('shield', 14)} Если ${COUNTRY[ownerCode].name} нападёт на вас: шанс ${worst}%${when}</div>`;
+      }
+    }
 
     let actions = '';
     if (mine) {
@@ -241,6 +256,7 @@ export class App {
         <div class="battle">
           <div class="battle-row"><span>Ваша сила</span><b>${fmt(attackPower(s, f))}</b></div>
           <div class="battle-row"><span>Оборона</span><b>${fmt(defensePower(s, code))}</b></div>
+          ${ownerCode === code ? `<div class="muted small">${icon('castle', 14)} Родная земля: +40% к обороне</div>` : ''}
           ${f === 'sea' ? `<div class="muted small">${icon('dove', 14)} Морской десант${trait(s.player).effect.seaMaster ? ' без штрафа' : ': −25% к силе'}</div>` : ''}
           <div class="chance"><div class="chance-bar"><i style="width:${ch}%"></i></div><span>Шанс победы <b>${ch}%</b></span></div>
         </div>
@@ -262,10 +278,12 @@ export class App {
         <div class="stat">${icon('swords', 16)}<span>${armyLabel}</span><b>${fmt(armyValue)}</b></div>
         <div class="stat">${icon('coins', 16)}<span>Доход</span><b>${c.eco}</b></div>
       </div>
+      ${lands > 1 ? `<div class="muted small">${mine ? 'У вас' : `У страны ${COUNTRY[ownerCode].name}`} территорий: ${lands}. Армия защищает их все.</div>` : ''}
       <div class="trait"><div class="muted small">Особенность</div><b>${tr.name}</b><div>${tr.text}</div></div>
+      ${threat}
       <div class="actions">${actions}</div>
       ${politicsBlock(s.parties[nation], s.ruling[nation], COUNTRY[nation].gov, electionNote)}
-      <ul class="log">${s.log.slice(0, 5).map((l) => `<li class="${l.tone}"><span>Ход ${l.turn}</span>${l.text}</li>`).join('')}</ul>`;
+      <ul class="log">${s.log.slice(0, 6).map((l) => `<li class="${l.tone}"><span>Ход ${l.turn}</span>${l.text}</li>`).join('')}</ul>`;
 
     const on = (id: string, fn: () => void, why: string) => {
       const b = document.getElementById(id);
@@ -319,7 +337,49 @@ export class App {
     $('#end-turn').onclick = () => {
       let income = 0;
       this.act(() => { income = endTurn(s); });
+      this.map.flash(s.events.filter((e) => e.won).map((e) => e.target));
+      if (s.won || s.lost) return;
       this.toast(`Ход ${s.turn}, ${season(s.turn)}. Доход ${signed(income)}`, 'info');
+      if (s.events.some((e) => e.defender === s.player)) this.showTurnReport();
+      else if (s.events.length) this.toast(`Сражений в Европе: ${s.events.length}. Подробности в журнале`, 'info');
+    };
+  }
+
+  /** Battles of the computer turn. Opens only when the player was attacked. */
+  private showTurnReport() {
+    const s = this.s!;
+    const rows = [...s.events]
+      .sort((a, b) => Number(b.defender === s.player) - Number(a.defender === s.player))
+      .slice(0, 8)
+      .map((e) => {
+        const vsMe = e.defender === s.player;
+        const tone = vsMe ? (e.won ? 'bad' : 'good') : 'info';
+        const result = vsMe ? (e.won ? 'захвачено' : 'отбито') : e.won ? 'захвачено' : 'атака отбита';
+        return `
+          <li class="${tone}">
+            <img src="${flagUrl(e.attacker)}" alt="" class="flag-s">
+            <span>${COUNTRY[e.attacker].name} → ${COUNTRY[e.target].name}</span>
+            <b>${result}</b>
+          </li>`;
+      }).join('');
+    const m = this.modal(`
+      <h3>Итоги хода</h3>
+      <p class="muted">На вас напали. Шанс каждого соседа против вас виден на карточке страны.</p>
+      <ul class="report">${rows}</ul>
+      <div class="row"><button class="btn primary" data-m="ok">Понятно</button></div>`);
+    m.querySelector<HTMLButtonElement>('[data-m="ok"]')!.onclick = () => this.closeModal();
+  }
+
+  private showLose() {
+    const s = this.s!;
+    const m = this.modal(`
+      <h3>Ваша страна пала</h3>
+      <p class="muted">${COUNTRY[s.player].name} продержалась ходов: ${s.turn}. Попробуйте другую стратегию или страну.</p>
+      <div class="row"><button class="btn primary" data-m="new">Новая игра</button></div>`);
+    m.querySelector<HTMLButtonElement>('[data-m="new"]')!.onclick = () => {
+      clearSave();
+      this.closeModal();
+      this.showStart();
     };
   }
 

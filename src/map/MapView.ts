@@ -258,6 +258,17 @@ export class MapView {
     else svg.transition().duration(duration).call(this.zoomer.transform, t);
   }
 
+  /** Briefly highlights territories that just changed hands. */
+  flash(codes: string[]) {
+    if (!codes.length) return;
+    const set = new Set(codes);
+    const paths = this.gCountries.selectAll<SVGPathElement, CountryFeature>('path').filter((f) => set.has(f.id));
+    paths.classed('flash', false);
+    void this.el.getBoundingClientRect(); // restart the animation
+    paths.classed('flash', true);
+    setTimeout(() => paths.classed('flash', false), 2600);
+  }
+
   zoomBy(f: number) {
     select(this.el).transition().duration(250).call(this.zoomer.scaleBy, f);
   }
