@@ -2,6 +2,7 @@ import { COUNTRIES, COUNTRY, PARTIES, PARTY_ORDER, type PartyId } from '../data/
 import { land, sea } from './graph';
 import { drawHand } from './cards';
 import { aiTurn } from './ai';
+import { rollEvents } from './events';
 import {
   type GameState, type Parties, ELECTION_EVERY, HOME_BONUS, MAX_ATTACKS, addArmy, alive, armyOf, fx, isWinter, owned,
   ownedBy, playerRuling, topParty,
@@ -236,5 +237,6 @@ export function endTurn(s: GameState) {
   s.turnIncomeMul = 1;
   s.played = null;
   s.hand = drawHand();
+  if (!s.lost) rollEvents(s);
   return income;
 }

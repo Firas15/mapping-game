@@ -46,6 +46,10 @@ export interface GameState {
   log: { turn: number; text: string; tone: 'good' | 'bad' | 'info' }[];
   /** battles of the last computer turn */
   events: WarEvent[];
+  /** event waiting for the player's choice */
+  pendingEvent?: string | null;
+  /** event id -> turn it last happened */
+  eventSeen?: Record<string, number>;
   won: boolean;
   lost: boolean;
 }
@@ -99,6 +103,8 @@ export function newGame(player: string, hand: string[]): GameState {
       { turn: 1, text: `Пока в Европе мир. С ${PLAYER_SAFE_UNTIL}-го хода соседи могут напасть и на вас`, tone: 'info' },
     ],
     events: [],
+    pendingEvent: null,
+    eventSeen: {},
     won: false,
     lost: false,
   };

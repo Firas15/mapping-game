@@ -13,6 +13,7 @@ import {
 import { MapView } from '../map/MapView';
 import { icon } from './icons';
 import { politicsBlock } from './politics';
+import { EVENT, resolveEvent } from '../game/events';
 import { Tutorial, tutorialDone } from './tutorial';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -122,6 +123,7 @@ export class App {
     this.selected = this.s!.player;
     this.renderAll();
     requestAnimationFrame(() => this.focusHome());
+    if (this.s!.pendingEvent) this.showEvent();
   }
 
   private focusHome() {
@@ -194,7 +196,7 @@ export class App {
           <span class="ri money">${icon('coins')}</span><b>${fmt(s.money)}</b><small class="${net >= 0 ? 'up' : 'down'}">${signed(net)}</small></div>
         <div class="res" title="Армия. Содержание: ${upkeep(s)} денег за ход">
           <span class="ri army">${icon('swords')}</span><b>${fmt(s.army)}</b></div>
-        <div class="res" title="Стабильность. Доход умножается на ${Math.round((0.5 + s.stability / 200) * 100)}%">
+        <div class="res ${s.stability < 30 ? 'warn' : ''}" title="Стабильность. Доход умножается на ${Math.round((0.5 + s.stability / 200) * 100)}%. Ниже 45% начинаются протесты, ниже 20% — революция">
           <span class="ri stab">${icon('smile')}</span><b>${s.stability}%</b>
           <span class="meter"><i style="width:${s.stability}%"></i></span></div>
         <div class="res" title="Влияние: +${influenceGain(s)} за ход. Тратится на мирное присоединение">
@@ -340,9 +342,43 @@ export class App {
       this.map.flash(s.events.filter((e) => e.won).map((e) => e.target));
       if (s.won || s.lost) return;
       this.toast(`Ход ${s.turn}, ${season(s.turn)}. Доход ${signed(income)}`, 'info');
-      if (s.events.some((e) => e.defender === s.player)) this.showTurnReport();
-      else if (s.events.length) this.toast(`Сражений в Европе: ${s.events.length}. Подробности в журнале`, 'info');
+      const report = () => {
+        if (s.events.some((e) => e.defender === s.player)) this.showTurnReport();
+        else if (s.events.length) this.toast(`Сражений в Европе: ${s.events.length}. Подробности в журнале`, 'info');
+      };
+      if (s.pendingEvent) this.showEvent(report);
+      else report();
     };
+  }
+
+  /** A random event. The player has to pick an option to go on. */
+  private showEvent(after?: () => void) {
+    const s = this.s!;
+    const ev = s.pendingEvent ? EVENT[s.pendingEvent] : null;
+    if (!ev) return after?.();
+    const options = ev.options.map((o, i) => {
+      const fx = o.effects(s);
+      return `
+        <button class="event-opt" data-opt="${i}">
+          <b>${o.label}</b>
+          ${fx.length ? fx.map((e) => `<span class="${e.good ? 'up' : 'down'}">${e.text}</span>`).join('') : '<span class="muted">Ничего не изменится</span>'}
+        </button>`;
+    }).join('');
+    const m = this.modal(`
+      <div class="event-head">
+        <span class="event-icon">${icon(ev.icon, 26)}</span>
+        <div class="event-meta">Событие · ход ${s.turn}</div>
+      </div>
+      <h3>${ev.title}</h3>
+      <p class="event-text">${ev.text(s)}</p>
+      <div class="event-opts">${options}</div>`, 'event');
+    m.querySelectorAll<HTMLButtonElement>('[data-opt]').forEach((b) => {
+      b.onclick = () => {
+        this.closeModal();
+        this.act(() => resolveEvent(s, Number(b.dataset.opt)));
+        after?.();
+      };
+    });
   }
 
   /** Battles of the computer turn. Opens only when the player was attacked. */
@@ -394,9 +430,9 @@ export class App {
     setTimeout(() => t.remove(), 3000);
   }
 
-  private modal(html: string) {
+  private modal(html: string, cls = '') {
     const m = $('#modal');
-    m.innerHTML = `<div class="modal-card">${html}</div>`;
+    m.innerHTML = `<div class="modal-card ${cls}">${html}</div>`;
     m.classList.add('open');
     return m;
   }
