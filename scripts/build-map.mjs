@@ -42,13 +42,16 @@ const rewind = (mp) =>
     }),
   );
 
-// Pieces that wrap around the date line (Chukotka) look like a band across the
-// whole map once clipped on a flat plane. They are far outside the window anyway.
+// Rings that run past the date line (mainland Russia through Chukotka) jump from
+// +180 to −180. On a flat plane that turns into a band across the whole map, so
+// move their western-hemisphere points past +180; the clip box then cuts them off.
 const wrapsDateLine = (poly) => {
   const lons = poly[0].map((p) => p[0]);
   return Math.max(...lons) - Math.min(...lons) > 180;
 };
-const asMulti = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.coordinates).filter((p) => !wrapsDateLine(p));
+const unwrap = (poly) => poly.map((ring) => ring.map(([x, y]) => [x < 0 ? x + 360 : x, y]));
+const asMulti = (g) =>
+  (g.type === 'Polygon' ? [g.coordinates] : g.coordinates).map((p) => (wrapsDateLine(p) ? unwrap(p) : p));
 
 const byCode = new Map();
 const context = [];
