@@ -3,6 +3,8 @@ import { land, sea } from './graph';
 import { drawHand } from './cards';
 import { aiTurn } from './ai';
 import { rollEvents } from './events';
+import { upg, upgSeaMaster } from './upgrades';
+import { allyHelp, driftRelations, isAlly, onPlayerAttack } from './diplomacy';
 import {
   type GameState, type Parties, ELECTION_EVERY, HOME_BONUS, MAX_ATTACKS, addArmy, alive, armyOf, fx, isWinter, owned,
   ownedBy, playerRuling, topParty,
@@ -18,13 +20,15 @@ export const log = (s: GameState, text: string, tone: 'good' | 'bad' | 'info' = 
 
 export const RECRUIT_SIZE = 10;
 export const recruitCostOf = (nation: string) => Math.round(100 * (1 + (fx(nation).armyCostMul ?? 0)));
-export const recruitCost = (s: GameState) => recruitCostOf(s.player);
+export const recruitCost = (s: GameState) =>
+  Math.round(100 * (1 + (fx(s.player).armyCostMul ?? 0) + upg(s, 'armyCostMul')));
+export const maxAttacks = (s: GameState) => MAX_ATTACKS + upg(s, 'extraAttacks');
 export const upkeepOf = (army: number) => Math.round(army * 0.25);
 export const upkeep = (s: GameState) => upkeepOf(s.army);
 export const stabilityFactor = (s: GameState) => 0.5 + s.stability / 200;
 
 export function incomeMul(s: GameState) {
-  return 1 + (fx(s.player).incomeMul ?? 0) + s.bonus.incomeMul + (playerRuling(s) === 'soc' ? 0.1 : 0);
+  return 1 + (fx(s.player).incomeMul ?? 0) + s.bonus.incomeMul + upg(s, 'incomeMul') + (playerRuling(s) === 'soc' ? 0.1 : 0);
 }
 
 /** Money a nation's land brings before modifiers. */
@@ -37,7 +41,7 @@ export const netIncome = (s: GameState) => Math.round(grossIncome(s) * s.turnInc
 
 export function influenceGain(s: GameState) {
   const r = playerRuling(s);
-  return 1 + (fx(s.player).influence ?? 0) + (r === 'dem' ? 2 : 0) - (r === 'nat' ? 1 : 0);
+  return 1 + (fx(s.player).influence ?? 0) + upg(s, 'influence') + (r === 'dem' ? 2 : 0) - (r === 'nat' ? 1 : 0);
 }
 
 export function recruit(s: GameState): boolean {
@@ -60,30 +64,36 @@ export function frontOf(s: GameState, attacker: string, target: string): Front {
   if (mine.some((c) => sea.get(c)?.has(target))) return 'sea';
   return null;
 }
-export const front = (s: GameState, target: string) => frontOf(s, s.player, target);
+/** Where the player can attack. Allies are off limits. */
+export const front = (s: GameState, target: string) =>
+  isAlly(s, s.owner[target]) ? null : frontOf(s, s.player, target);
 
-export function attackPowerOf(s: GameState, attacker: string, f: Front) {
-  const seaPenalty = f === 'sea' && !fx(attacker).seaMaster ? 0.75 : 1;
-  const bonus = attacker === s.player ? s.bonus.attackMul : 0;
+export function attackPowerOf(s: GameState, attacker: string, f: Front, target?: string) {
+  const me = attacker === s.player;
+  const seaMaster = fx(attacker).seaMaster || (me && upgSeaMaster(s));
+  const seaPenalty = f === 'sea' && !seaMaster ? 0.75 : 1;
+  const bonus = me ? s.bonus.attackMul + upg(s, 'attackMul') : 0;
   const mul = 1 + (fx(attacker).attackMul ?? 0) + bonus + (s.ruling[attacker] === 'nat' ? 0.15 : 0);
-  return armyOf(s, attacker) * mul * seaPenalty;
+  const help = me && target ? allyHelp(s, target) : 0;
+  return armyOf(s, attacker) * mul * seaPenalty + help;
 }
-export const attackPower = (s: GameState, f: Front) => attackPowerOf(s, s.player, f);
+export const attackPower = (s: GameState, f: Front, target?: string) => attackPowerOf(s, s.player, f, target);
 
 /** The owner's whole army defends; the land itself (its trait, winter) helps. */
 export function defensePower(s: GameState, target: string) {
   const owner = s.owner[target];
   const e = fx(target);
-  const bonus = owner === s.player ? s.bonus.defenseMul : 0;
+  const mine = owner === s.player;
+  const bonus = mine ? s.bonus.defenseMul + upg(s, 'defenseMul') : 0;
   const home = owner === target ? HOME_BONUS : 0;
   const mul = 1 + (e.defenseMul ?? 0) + (isWinter(s.turn) ? e.winterDefenseMul ?? 0 : 0) + bonus + home;
-  return Math.max(1, armyOf(s, owner) * mul);
+  return Math.max(1, armyOf(s, owner) * mul + (mine ? allyHelp(s, target) : 0));
 }
 
 export function chanceOf(s: GameState, attacker: string, target: string) {
   const f = frontOf(s, attacker, target);
   if (!f) return 0;
-  const a = attackPowerOf(s, attacker, f) ** 2;
+  const a = attackPowerOf(s, attacker, f, target) ** 2;
   const d = defensePower(s, target) ** 2;
   return clamp(Math.round((a / (a + d)) * 100), 3, 97);
 }
@@ -94,7 +104,7 @@ export function battle(s: GameState, attacker: string, target: string, roll = Ma
   const defender = s.owner[target];
   const f = frontOf(s, attacker, target);
   const chance = chanceOf(s, attacker, target);
-  const att = attackPowerOf(s, attacker, f);
+  const att = attackPowerOf(s, attacker, f, target);
   const def = defensePower(s, target);
   const won = roll * 100 < chance;
   if (won) {
@@ -115,6 +125,7 @@ export function attack(s: GameState, target: string, roll = Math.random()): 'win
   const name = COUNTRY[target].name;
   s.attacksLeft--;
   const warWeariness = (playerRuling(s) === 'dem' ? 3 : 0) + (fx(target).aggressorStability ?? 0);
+  onPlayerAttack(s, s.owner[target]);
   const r = battle(s, s.player, target, roll);
   if (r.won) {
     s.stability = clamp(s.stability - 4 - warWeariness, 0, 100);
@@ -140,16 +151,24 @@ function checkWin(s: GameState) {
 export const annexCost = (s: GameState, target: string) => {
   const nation = s.owner[target];
   const eco = ownedBy(s, nation).reduce((sum, c) => sum + COUNTRY[c].eco, 0);
-  return Math.round(12 + armyOf(s, nation) * 0.8 + eco * 0.4);
+  const base = 12 + armyOf(s, nation) * 0.8 + eco * 0.4;
+  // friends are cheaper, enemies dearer; allies cost half
+  const mood = 1 - (s.relations?.[nation] ?? 0) / 200;
+  const ally = isAlly(s, nation) ? 0.5 : 1;
+  return Math.round(base * mood * ally * (1 + upg(s, 'annexMul')));
 };
 
-export function canAnnex(s: GameState, target: string) {
-  return front(s, target) !== null && s.owner[target] === target && s.influence >= annexCost(s, target);
+/** Allies can be annexed anywhere; other countries only next to the border. */
+export function canAnnexHere(s: GameState, target: string) {
+  const nation = s.owner[target];
+  return nation === target && nation !== s.player && (isAlly(s, nation) || front(s, target) !== null);
 }
+export const canAnnex = (s: GameState, target: string) => canAnnexHere(s, target) && s.influence >= annexCost(s, target);
 
 export function annex(s: GameState, target: string) {
   if (!canAnnex(s, target)) return false;
   s.influence -= annexCost(s, target);
+  s.allies = (s.allies ?? []).filter((a) => a !== target);
   const lands = ownedBy(s, target);
   for (const c of lands) s.owner[c] = s.player;
   s.army += Math.round(s.ai[target].army * 0.5); // half their soldiers join
@@ -213,7 +232,7 @@ export function endTurn(s: GameState) {
   }
 
   const e = fx(s.player);
-  let stab = (e.stability ?? 0) + (playerRuling(s) === 'con' ? 1 : 0);
+  let stab = (e.stability ?? 0) + upg(s, 'stability') + (playerRuling(s) === 'con' ? 1 : 0);
   if (s.stability < 50) stab += 1;
   else if (s.stability > 80) stab -= 1;
   s.stability = clamp(s.stability + stab, 0, 100);
@@ -233,7 +252,8 @@ export function endTurn(s: GameState) {
     log(s, 'Ваша страна пала', 'bad');
   }
   if (s.turn >= s.nextElection) holdElections(s);
-  s.attacksLeft = MAX_ATTACKS;
+  driftRelations(s);
+  s.attacksLeft = maxAttacks(s);
   s.turnIncomeMul = 1;
   s.played = null;
   s.hand = drawHand();

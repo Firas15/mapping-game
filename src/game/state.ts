@@ -50,6 +50,11 @@ export interface GameState {
   pendingEvent?: string | null;
   /** event id -> turn it last happened */
   eventSeen?: Record<string, number>;
+  /** attitude of each computer country to the player, −100..100 */
+  relations?: Record<string, number>;
+  allies?: string[];
+  /** bought upgrades */
+  upgrades?: string[];
   won: boolean;
   lost: boolean;
 }
@@ -80,8 +85,15 @@ export function newGame(player: string, hand: string[]): GameState {
     parties[x.code] = [...x.parties];
     ruling[x.code] = topParty(x.parties);
   }
+  const relations: Record<string, number> = {};
+  for (const x of COUNTRIES) {
+    if (x.code !== player) relations[x.code] = ruling[x.code] === ruling[player] ? 20 : 0;
+  }
   return {
     version: 2,
+    relations,
+    allies: [],
+    upgrades: [],
     player,
     turn: 1,
     owner,
@@ -131,7 +143,12 @@ export function load(): GameState | null {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     const s = raw ? (JSON.parse(raw) as GameState) : null;
-    return s && s.version === 2 && COUNTRY[s.player] && !s.lost ? s : null;
+    if (!s || s.version !== 2 || !COUNTRY[s.player] || s.lost) return null;
+    // saves from before diplomacy and upgrades existed
+    s.relations ??= Object.fromEntries(COUNTRIES.filter((x) => x.code !== s.player).map((x) => [x.code, 0]));
+    s.allies ??= [];
+    s.upgrades ??= [];
+    return s;
   } catch {
     return null;
   }

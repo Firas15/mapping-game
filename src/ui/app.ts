@@ -3,13 +3,17 @@ import { TRAITS } from '../data/traits';
 import { buildGraph } from '../game/graph';
 import { CARD, drawHand, playCard } from '../game/cards';
 import {
-  type GameState, MAX_ATTACKS, PLAYER_SAFE_UNTIL, armyOf, clearSave, load, newGame, owned, ownedBy, save,
-  season, trait,
+  type GameState, PLAYER_SAFE_UNTIL, armyOf, clearSave, load, newGame, owned, ownedBy, save, season, trait,
 } from '../game/state';
 import {
-  RECRUIT_SIZE, annex, annexCost, attack, attackPower, chanceOf, defensePower, endTurn, front, grossIncome,
-  influenceGain, netIncome, recruit, recruitCost, upkeep, winChance,
+  RECRUIT_SIZE, annex, annexCost, attack, attackPower, canAnnexHere, chanceOf, defensePower, endTurn, front,
+  grossIncome, influenceGain, maxAttacks, netIncome, recruit, recruitCost, upkeep, winChance,
 } from '../game/rules';
+import {
+  ALLIANCE_COST, ALLY_HELP, ALLY_MIN, allyHelp, breakAlliance, canAlly, improveCost, improveRelations, isAlly,
+  proposeAlliance, relation, relationLabel,
+} from '../game/diplomacy';
+import { BRANCHES, UPGRADES, buyUpgrade, hasUpgrade, upgradeBlocked } from '../game/upgrades';
 import { MapView } from '../map/MapView';
 import { icon } from './icons';
 import { politicsBlock } from './politics';
@@ -161,6 +165,7 @@ export class App {
       player: s ? s.player : null,
       selected: s ? this.selected : this.picked,
       targets: this.targets(),
+      allies: new Set(s?.allies ?? []),
     });
   }
 
@@ -204,10 +209,13 @@ export class App {
       </div>
       <div class="hud-turn">
         <div><b>Ход ${s.turn}</b><div class="muted">${season(s.turn)}</div></div>
-        <div class="attacks" title="Атак осталось в этом ходу">${icon('target', 16)} ${s.attacksLeft}/${MAX_ATTACKS}</div>
+        <div class="attacks" title="Атак осталось в этом ходу">${icon('target', 16)} ${s.attacksLeft}/${maxAttacks(s)}</div>
+        <button class="btn upg-btn" id="upgrades" title="Улучшения">${icon('sparkles', 16)}<span>Улучшения</span>
+          <small>${(s.upgrades ?? []).length}/${UPGRADES.length}</small></button>
         <button class="icon-btn" id="help" aria-label="Обучение">${icon('help')}</button>
         <button class="icon-btn" id="menu" aria-label="Новая игра">${icon('restart')}</button>
       </div>`;
+    $('#upgrades').onclick = () => this.showUpgrades();
     $('#help').onclick = () => this.tutorial.start();
     $('#menu').onclick = () => this.confirmRestart();
   }
@@ -250,24 +258,33 @@ export class App {
         <button class="btn primary wide" id="recruit" ${s.money < cost ? 'data-off="1"' : ''}>
           ${icon('users', 16)} Набрать войска: +${RECRUIT_SIZE} за ${cost}</button>
         <div class="muted small">Каждые 4 солдата стоят 1 деньгу за ход</div>`;
-    } else if (f) {
-      const ch = winChance(s, code);
-      const cost = annexCost(s, code);
-      const canAnnex = ownerCode === code;
-      actions = `
-        <div class="battle">
-          <div class="battle-row"><span>Ваша сила</span><b>${fmt(attackPower(s, f))}</b></div>
-          <div class="battle-row"><span>Оборона</span><b>${fmt(defensePower(s, code))}</b></div>
-          ${ownerCode === code ? `<div class="muted small">${icon('castle', 14)} Родная земля: +40% к обороне</div>` : ''}
-          ${f === 'sea' ? `<div class="muted small">${icon('dove', 14)} Морской десант${trait(s.player).effect.seaMaster ? ' без штрафа' : ': −25% к силе'}</div>` : ''}
-          <div class="chance"><div class="chance-bar"><i style="width:${ch}%"></i></div><span>Шанс победы <b>${ch}%</b></span></div>
-        </div>
-        <button class="btn danger wide" id="attack" ${s.attacksLeft <= 0 || s.army < 5 ? 'data-off="1"' : ''}>
-          ${icon('swords', 16)} Атаковать</button>
-        ${canAnnex ? `<button class="btn wide" id="annex" ${s.influence < cost ? 'data-off="1"' : ''}>
-          ${icon('handshake', 16)} Присоединить за ${cost} влияния</button>` : ''}`;
     } else {
-      actions = `<div class="note">Нет общей границы. Захватите соседей, чтобы подобраться ближе.</div>`;
+      const ally = isAlly(s, ownerCode);
+      const cost = annexCost(s, code);
+      const annexBtn = canAnnexHere(s, code)
+        ? `<button class="btn wide" id="annex" ${s.influence < cost ? 'data-off="1"' : ''}>
+            ${icon('handshake', 16)} Присоединить за ${cost} влияния</button>` : '';
+      if (f) {
+        const ch = winChance(s, code);
+        const help = allyHelp(s, code);
+        actions = `
+          <div class="battle">
+            <div class="battle-row"><span>Ваша сила</span><b>${fmt(attackPower(s, f, code))}</b></div>
+            ${help > 0 ? `<div class="muted small">${icon('handshake', 14)} Союзники помогают: +${fmt(help)}</div>` : ''}
+            <div class="battle-row"><span>Оборона</span><b>${fmt(defensePower(s, code))}</b></div>
+            ${ownerCode === code ? `<div class="muted small">${icon('castle', 14)} Родная земля: +40% к обороне</div>` : ''}
+            ${f === 'sea' ? `<div class="muted small">${icon('dove', 14)} Морской десант${trait(s.player).effect.seaMaster || hasUpgrade(s, 'navy') ? ' без штрафа' : ': −25% к силе'}</div>` : ''}
+            <div class="chance"><div class="chance-bar"><i style="width:${ch}%"></i></div><span>Шанс победы <b>${ch}%</b></span></div>
+          </div>
+          <button class="btn danger wide" id="attack" ${s.attacksLeft <= 0 || s.army < 5 ? 'data-off="1"' : ''}>
+            ${icon('swords', 16)} Атаковать</button>
+          ${annexBtn}`;
+      } else if (ally) {
+        actions = `<div class="note">Союзник. Помогает вам в боях рядом со своей границей: ${Math.round(ALLY_HELP * 100)}% армии.</div>${annexBtn}`;
+      } else {
+        actions = `<div class="note">Нет общей границы. Захватите соседей, чтобы подобраться ближе.</div>`;
+      }
+      actions += this.diplomacyBlock(ownerCode);
     }
 
     const electionNote = nation === s.player ? `Ходов до выборов: ${s.nextElection - s.turn}` : '';
@@ -296,6 +313,77 @@ export class App {
     on('annex', () => this.act(() => {
       if (annex(s, code)) this.toast(`Мирно присоединено: ${c.name}`, 'good');
     }), `Нужно ${annexCost(s, code)} влияния`);
+    on('improve', () => this.act(() => { improveRelations(s, ownerCode); }), `Нужно ${improveCost(s, ownerCode)} влияния`);
+    on('ally', () => this.act(() => {
+      if (proposeAlliance(s, ownerCode)) this.toast(`Союз заключён: ${COUNTRY[ownerCode].name}`, 'good');
+    }), relation(s, ownerCode) < ALLY_MIN ? `Нужны отношения от +${ALLY_MIN}` : `Нужно ${ALLIANCE_COST} влияния`);
+    on('break', () => this.act(() => { breakAlliance(s, ownerCode); }), '');
+  }
+
+  /** Relations with a computer country and what can be done about them. */
+  private diplomacyBlock(nation: string): string {
+    const s = this.s!;
+    const r = relation(s, nation);
+    const label = relationLabel(s, nation);
+    const ally = isAlly(s, nation);
+    const pos = (r + 100) / 2; // 0..100 on the bar
+    let buttons = '';
+    if (ally) {
+      buttons = `<button class="btn ghost wide" id="break">Разорвать союз</button>`;
+    } else {
+      const ic = improveCost(s, nation);
+      buttons = `
+        <div class="dip-row">
+          <button class="btn" id="improve" ${s.influence < ic || r >= 100 ? 'data-off="1"' : ''}>+${15} отношений · ${ic} влияния</button>
+          <button class="btn" id="ally" ${!canAlly(s, nation) ? 'data-off="1"' : ''}>${icon('handshake', 15)} Союз</button>
+        </div>
+        <div class="muted small">Союз возможен от +${ALLY_MIN}. Союзники не нападают и помогают в боях.</div>`;
+    }
+    return `
+      <div class="diplomacy">
+        <div class="dip-head"><span>Отношения с вами</span><b class="${label.tone}">${label.text} · ${r > 0 ? '+' : ''}${r}</b></div>
+        <div class="rel-bar"><i style="left:${pos}%"></i><span style="left:${(ALLY_MIN + 100) / 2}%"></span></div>
+        ${buttons}
+      </div>`;
+  }
+
+  private showUpgrades() {
+    const s = this.s!;
+    const cols = BRANCHES.map((b) => `
+      <div class="upg-col">
+        <div class="upg-branch">${b.name}</div>
+        ${UPGRADES.filter((u) => u.branch === b.id).map((u) => {
+          const why = upgradeBlocked(s, u);
+          const done = hasUpgrade(s, u.id);
+          const state = done ? 'done' : why ? 'locked' : 'ready';
+          return `
+            <button class="upg ${state}" data-upg="${u.id}">
+              <span class="upg-icon">${icon(done ? 'trophy' : u.icon, 16)}</span>
+              <b>${u.name}</b>
+              <span class="upg-text">${u.text}</span>
+              <span class="upg-cost">${done ? 'Изучено' : why && !why.startsWith('Нужно') ? why : `${u.cost} денег`}</span>
+            </button>`;
+        }).join('')}
+      </div>`).join('');
+    const m = this.modal(`
+      <div class="upg-top"><h3>Улучшения</h3><span class="muted">Казна: <b>${fmt(s.money)}</b></span>
+        <button class="icon-btn" data-m="close" aria-label="Закрыть">${icon('close', 16)}</button></div>
+      <p class="muted">Покупаются за деньги и действуют сразу и навсегда. Некоторые требуют предыдущего.</p>
+      <div class="upg-grid">${cols}</div>`, 'upgrades');
+    m.querySelector<HTMLButtonElement>('[data-m="close"]')!.onclick = () => this.closeModal();
+    m.querySelectorAll<HTMLButtonElement>('[data-upg]').forEach((b) => {
+      b.onclick = () => {
+        const u = UPGRADES.find((x) => x.id === b.dataset.upg)!;
+        const why = upgradeBlocked(s, u);
+        if (why) return this.toast(why, why === 'Изучено' ? 'info' : 'bad');
+        this.act(() => {
+          buyUpgrade(s, u.id);
+          if (u.effect.extraAttacks) s.attacksLeft += u.effect.extraAttacks;
+        });
+        this.toast(`Изучено: ${u.name}`, 'good');
+        this.showUpgrades();
+      };
+    });
   }
 
   private doAttack(code: string) {

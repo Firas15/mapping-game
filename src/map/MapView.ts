@@ -18,6 +18,8 @@ export interface MapState {
   selected: string | null;
   /** territories the player can attack right now */
   targets: Set<string>;
+  /** countries allied with the player */
+  allies?: Set<string>;
 }
 
 export class MapView {
@@ -205,7 +207,8 @@ export class MapView {
     const col = (code: string) => COUNTRY[s.owner[code] ?? code]?.color ?? '#555';
     this.gCountries.selectAll<SVGPathElement, CountryFeature>('path')
       .attr('fill', (f) => col(f.id))
-      .classed('mine', (f) => s.owner[f.id] === s.player);
+      .classed('mine', (f) => s.owner[f.id] === s.player)
+      .classed('ally', (f) => !!s.allies?.has(s.owner[f.id]));
 
     this.gTargets.selectAll<SVGPathElement, CountryFeature>('path')
       .data(this.playable.filter((f) => s.targets.has(f.id)), (f) => f.id)

@@ -3,6 +3,7 @@ import { type GameState, PLAYER_SAFE_UNTIL, WAR_STARTS, alive, fx, owned } from 
 import {
   RECRUIT_SIZE, baseIncome, battle, chanceOf, clamp, frontOf, log, recruitCostOf, shiftParty, upkeepOf,
 } from './rules';
+import { changeRelation, isAlly, relation } from './diplomacy';
 
 /** How eager a government is to start a war, per turn. */
 const AGGRESSION = { nat: 0.35, con: 0.18, soc: 0.14, dem: 0.07 } as const;
@@ -41,10 +42,13 @@ function pickTarget(s: GameState, nation: string): string | null {
     const defender = s.owner[target];
     if (defender === nation || !frontOf(s, nation, target)) continue;
     if (defender === s.player && s.turn < PLAYER_SAFE_UNTIL) continue;
+    // friends and allies of the player leave it alone
+    const rel = relation(s, nation);
+    if (defender === s.player && (isAlly(s, nation) || rel >= 40)) continue;
     const chance = chanceOf(s, nation, target);
     if (chance < NERVE[ruling]) continue;
     // a growing player looks like a threat worth stopping
-    const threat = defender === s.player ? Math.min(12, Math.max(0, playerSize - 3) * 2) : 0;
+    const threat = defender === s.player ? Math.min(12, Math.max(0, playerSize - 3) * 2) - rel * 0.3 : 0;
     const score = chance + x.eco * 0.3 + threat + Math.random() * 10;
     if (score > bestScore) {
       bestScore = score;
@@ -82,6 +86,7 @@ export function aiTurn(s: GameState) {
     const a = COUNTRY[nation].name;
     const t = COUNTRY[target].name;
     if (r.defender === s.player) {
+      changeRelation(s, nation, -30);
       if (r.won) {
         s.stability = clamp(s.stability - 6, 0, 100);
         log(s, `${a} захватывает вашу территорию: ${t}`, 'bad');
