@@ -13,11 +13,11 @@ import {
 } from '../game/rules';
 import {
   type PeaceTerms, airStrike, airTargets, atWar, attackers, attackPower, blocOf, canAttackRegion, canMoveArmy,
-  cantDeclare, chance, declareWar, defensePower, enemiesOf, fleetMoves, friends, keyRegions, makePeace, moveArmy,
-  moveFleet, warPenalty,
+  airMoves, cantDeclare, chance, declareWar, defensePower, enemiesOf, fleetMoves, friends, joinCandidates, keyRegions,
+  makePeace, moveAir, moveArmy, moveFleet, warPenalty,
 } from '../game/war';
 import {
-  UNIT_INFO, armyTotal, build, cantBuild, cantReinforce, disband, draft, draftCap, maxArmies, mergeArmies, price,
+  UNIT_INFO, armyTotal, build, cantBuild, cantReinforce, disband, draft, draftCap, maxArmies, price,
   reinforceUnit, upkeepOf,
 } from '../game/units';
 import {
@@ -52,14 +52,17 @@ function difficulty(c: CountryDef): Difficulty4 {
 }
 const topPartyOf = (c: CountryDef) => (['dem', 'con', 'soc', 'nat'] as const)[c.parties.indexOf(Math.max(...c.parties))];
 
-export type MapMode = 'political' | 'resources' | 'relations' | 'threat' | 'unrest';
+export type MapMode = 'political' | 'blocs' | 'resources' | 'relations' | 'threat' | 'unrest';
 const MODES: { id: MapMode; name: string; icon: string; legend: string }[] = [
   { id: 'political', name: 'Политика', icon: 'flag', legend: '' },
+  { id: 'blocs', name: 'Коалиции', icon: 'users', legend: '' },
   { id: 'resources', name: 'Ресурсы', icon: 'coins', legend: '<i style="background:#e0b04a"></i>деньги <i style="background:#d6564d"></i>солдаты <i style="background:#9b7be0"></i>и то, и другое' },
   { id: 'relations', name: 'Отношения', icon: 'handshake', legend: '<i style="background:#d6403a"></i>война <i style="background:#7a3a3a"></i>вражда <i style="background:#4a5570"></i>нейтралитет <i style="background:#3fbf7f"></i>дружба, союз' },
   { id: 'threat', name: 'Угрозы', icon: 'shield', legend: '<i style="background:#2d5a44"></i>в безопасности <i style="background:#e2574c"></i>враг может взять' },
   { id: 'unrest', name: 'Недовольство', icon: 'megaphone', legend: '<i style="background:#e0c04a"></i>спокойно <i style="background:#e2574c"></i>скоро восстание' },
 ];
+
+const BLOC_COLORS = ['#5b9bf0', '#b07ad0', '#3fbfb0', '#e07b39'];
 
 /** Blend two #rrggbb colours. */
 function mix(a: string, b: string, t: number) {
@@ -75,6 +78,8 @@ export class App {
   private unitSel: number | null = null;
   /** region chosen as an attack target, waiting for "Атаковать" */
   private target: string | null = null;
+  /** other armies the player has added to the planned attack */
+  private joiners = new Set<number>();
   private mode: MapMode = 'political';
   private map: MapView;
   private tutorial = new Tutorial($('#tutorial'));
@@ -256,7 +261,10 @@ export class App {
     const u = this.unit();
     if (u && id && u.owner === s.player) {
       if (u.type === 'army' && canMoveArmy(s, u, id)) {
-        moveArmy(s, u, id);
+        const before = armiesAt(s, id, s.player).length;
+        const m = moveArmy(s, u, id);
+        this.unitSel = m?.id ?? null;
+        if (before) this.toast('Армии объединились', 'info');
         play('select');
         this.target = null;
         this.selected = id;
@@ -267,6 +275,7 @@ export class App {
       if (u.type === 'army' && canAttackRegion(s, u, id)) {
         if (this.target === id) { void this.doAttack(u, id); return; }
         this.target = id;
+        this.joiners.clear();
         this.selected = id;
         play('select');
         this.renderPanel();
@@ -274,6 +283,14 @@ export class App {
         return;
       }
       if (u.type === 'air' && airTargets(s, u).regions.includes(id)) { void this.doStrike(u, id); return; }
+      if (u.type === 'air' && moveAir(s, u, id)) {
+        play('select');
+        this.toast(`Авиакрыло перелетело: ${regionTitle(id)}`, 'info');
+        this.selected = id;
+        save(s);
+        this.renderAll();
+        return;
+      }
     }
     this.unitSel = null;
     this.target = null;
@@ -338,7 +355,7 @@ export class App {
     }
     if (u.type === 'air') {
       const t = airTargets(s, u);
-      return { moves: [], attacks: [], strikes: [...t.regions, ...t.zones], zones: [] };
+      return { moves: airMoves(s, u), attacks: [], strikes: [...t.regions, ...t.zones], zones: [] };
     }
     return { moves: [], attacks: [], strikes: [], zones: fleetMoves(u) };
   }
@@ -354,9 +371,11 @@ export class App {
     }
     this.busy = true;
     const wasCapital = s.capital[enemy] === to;
-    const group = attackers(s, u, to).length;
+    const join = [...this.joiners];
+    const group = attackers(s, u, to, join).length;
     await this.map.playStrike(u.at, to, COUNTRY[s.player].color, 'attack');
-    const r = playerAttack(s, u, to);
+    const r = playerAttack(s, u, to, join);
+    this.joiners.clear();
     this.busy = false;
     this.target = null;
     if (!r) { this.renderAll(); return; }
@@ -406,6 +425,7 @@ export class App {
     this.renderPanel();
     this.renderDecisions();
     this.renderJournal();
+    this.renderModes();
     this.updateMap();
     if (this.s.won || this.s.lost) this.showEnd();
   }
@@ -421,6 +441,7 @@ export class App {
       capitals: s?.capital,
       units: s?.units ?? [],
       selectedUnit: this.unitSel,
+      joining: this.target ? this.joiners : undefined,
       orders: this.orders(),
       fill: s ? this.fill() : null,
     });
@@ -438,6 +459,12 @@ export class App {
         const base = { industry: '#e0b04a', manpower: '#d6564d', hub: '#9b7be0' }[r.kind];
         const v = r.kind === 'manpower' ? r.men / 4 : r.eco / 30;
         out[r.id] = mix(dim, base, 0.35 + 0.65 * Math.min(1, v));
+      } else if (this.mode === 'blocs') {
+        const b = blocOf(s, o);
+        if (o === s.player || (s.allies.includes(o) && !b)) out[r.id] = o === s.player ? '#f0b94d' : '#c9a24a';
+        else if (s.coalition.includes(o)) out[r.id] = '#d6403a';
+        else if (b) out[r.id] = BLOC_COLORS[s.blocs.indexOf(b) % BLOC_COLORS.length];
+        else out[r.id] = dim;
       } else if (this.mode === 'relations') {
         if (o === s.player) out[r.id] = '#f0b94d';
         else if (atWar(s, s.player, o)) out[r.id] = '#d6403a';
@@ -465,12 +492,24 @@ export class App {
     return out;
   }
 
+  /** Legend for the current map mode; the bloc one lists the blocs in play. */
+  private legend(): string {
+    if (this.mode !== 'blocs') return MODES.find((m) => m.id === this.mode)!.legend;
+    const s = this.s;
+    if (!s) return '';
+    const parts = ['<span><i style="background:#f0b94d"></i>вы и союзники</span>'];
+    if (s.coalition.some((c) => ownedBy(s, c).length)) parts.push('<span><i style="background:#d6403a"></i>коалиция против вас</span>');
+    s.blocs.forEach((b, i) => parts.push(`<span><i style="background:${BLOC_COLORS[i % BLOC_COLORS.length]}"></i>${b.name}: ${b.members.map((m) => COUNTRY[m].name).join(', ')}</span>`));
+    if (!s.blocs.length) parts.push('<span class="muted">Блоков пока нет, они складываются по ходу игры</span>');
+    return parts.join('');
+  }
+
   private renderModes() {
     const bar = $('#modes');
     bar.innerHTML = `<div class="modes-row">${MODES.map((m) => `
       <button class="mode-btn ${m.id === this.mode ? 'on' : ''}" data-mode="${m.id}" title="${m.name}" aria-label="Режим карты: ${m.name}">
         ${icon(m.icon, 16)}<span>${m.name}</span></button>`).join('')}</div>
-      ${MODES.find((m) => m.id === this.mode)!.legend ? `<div class="legend">${MODES.find((m) => m.id === this.mode)!.legend}</div>` : ''}`;
+      ${this.legend() ? `<div class="mode-legend">${this.legend()}</div>` : ''}`;
     bar.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => {
       b.onclick = () => { this.mode = b.dataset.mode as MapMode; play('click'); this.renderModes(); this.updateMap(); };
     });
@@ -534,33 +573,40 @@ export class App {
       if (t) {
         const enemy = s.owner[t];
         const war = atWar(s, s.player, enemy);
-        const group = attackers(s, u, t);
-        const ch = chance(s, u, t);
+        const join = [...this.joiners];
+        const group = attackers(s, u, t, join);
+        const ch = chance(s, u, t, join);
+        const cands = joinCandidates(s, u, t);
+        const joinList = cands.length ? `
+          <div class="join-title">Подключить к удару <span class="muted">армии из соседних областей</span></div>
+          <div class="unit-list">${cands.map((x) => `
+            <button class="unit-row join-row ${this.joiners.has(x.id) ? 'on' : ''}" data-join="${x.id}">${icon('swords', 15)}
+              <span>${regionTitle(x.at)}</span><b>${x.str}</b><span class="join-tick">${this.joiners.has(x.id) ? 'В атаке' : 'Подключить'}</span></button>`).join('')}</div>` : '';
         body = `
           <div class="battle">
             <div class="battle-title">${icon('swords', 15)} Атака: ${regionTitle(t)} <img src="${flagUrl(enemy)}" alt="" class="flag-s"></div>
-            <div class="battle-row"><span>Наша сила${group.length > 1 ? ` (армий: ${group.length})` : ''}</span><b>${fmt(attackPower(s, u, t))}</b></div>
+            <div class="battle-row"><span>Наша сила${group.length > 1 ? ` (армий: ${group.length})` : ''}</span><b>${fmt(attackPower(s, u, t, join))}</b></div>
             <div class="battle-row"><span>Оборона</span><b>${fmt(defensePower(s, t))}</b></div>
             <div class="chance"><div class="chance-bar"><i style="width:${ch}%"></i></div><span>Шанс победы <b>${ch}%</b></span></div>
             ${war ? '' : `<div class="warn-line">${icon('flag', 14)} Войны с этой страной нет. Атака объявит её: −${warPenalty(s)} стабильности</div>`}
           </div>
+          ${joinList}
           <button class="btn danger wide" id="attack">${icon('swords', 16)} ${war ? 'Атаковать' : 'Объявить войну и атаковать'}</button>
           <button class="btn ghost wide" id="cancel-target">Отмена</button>`;
       } else if (u.acted) {
         body = `<div class="note">Армия уже действовала в этом ходу.</div>`;
       } else {
-        body = `<div class="hint">${icon('next', 14)} Зелёная стрелка — перейти. Процент — атаковать: нажмите, затем подтвердите. Все наши армии рядом атакуют вместе.</div>`;
+        body = `<div class="hint">${icon('next', 14)} Зелёная стрелка — перейти (армии в одной области объединяются). Процент — атаковать: нажмите, затем можно подключить армии из соседних областей.</div>`;
       }
       const why = cantReinforce(s, u);
       body += `
         <div class="row-btns">
           <button class="btn" id="reinforce" ${why ? `data-off="${why}"` : ''}>${icon('users', 15)} +10 за ${price(s, s.player, 'reinforce')}</button>
-          ${armiesAt(s, u.at, s.player).length > 1 ? `<button class="btn" id="merge">Объединить</button>` : ''}
           <button class="btn ghost" id="disband">Распустить</button>
         </div>`;
     } else if (u.type === 'air') {
       body = u.acted ? `<div class="note">Авиакрыло уже летало в этом ходу.</div>`
-        : `<div class="hint">${icon('target', 14)} Прицелы на карте — вражеские армии и флоты в радиусе 2 областей. Нажмите, чтобы нанести удар.</div>`;
+        : `<div class="hint">${icon('target', 14)} Прицелы — вражеские армии и флоты в радиусе 2 областей: нажмите, чтобы ударить. Зелёные стрелки — перелёт на свою территорию.</div>`;
       body += `<div class="row-btns"><button class="btn ghost" id="disband">Распустить</button></div>`;
     } else {
       body = u.acted ? `<div class="note">Флот уже ходил в этом ходу.</div>`
@@ -700,7 +746,15 @@ export class App {
     if (u) {
       on('attack', () => { if (this.target) void this.doAttack(u, this.target); });
       on('reinforce', () => this.act(() => { if (reinforceUnit(s, u)) play('recruit'); }));
-      on('merge', () => this.act(() => { mergeArmies(s, u.at, s.player); this.unitSel = armiesAt(s, u.at, s.player)[0]?.id ?? null; }));
+      $('#panel').querySelectorAll<HTMLButtonElement>('[data-join]').forEach((b) => {
+        b.onclick = () => {
+          const id = Number(b.dataset.join);
+          if (this.joiners.has(id)) this.joiners.delete(id); else this.joiners.add(id);
+          play('click');
+          this.renderPanel();
+          this.updateMap();
+        };
+      });
       on('disband', () => this.act(() => { disband(s, u); this.unitSel = null; }));
     }
     $('#panel').querySelectorAll<HTMLButtonElement>('[data-unit]').forEach((b) => {

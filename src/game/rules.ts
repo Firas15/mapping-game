@@ -11,7 +11,7 @@ import {
 } from './state';
 import { clamp, log } from './log';
 import {
-  type BattleResult, type PeaceTerms, atWar, canAttackRegion, landBattle, transfer, updateCapitals, updateUnrest, warOf, yieldShare,
+  type BattleResult, type PeaceTerms, atWar, canAttackRegion, landBattle, mergeAll, transfer, updateCapitals, updateUnrest, warOf, yieldShare,
 } from './war';
 import { armyTotal, draft, draftCap, reinforce, removeTroops, upkeepOf } from './units';
 import { progressFocus } from './focus';
@@ -52,11 +52,11 @@ export function influenceGain(s: GameState) {
 // ---------- player's war ----------
 
 /** Player army attacks a region of a country already at war with us. */
-export function playerAttack(s: GameState, u: Unit, to: string): BattleResult | null {
+export function playerAttack(s: GameState, u: Unit, to: string, join: number[] = []): BattleResult | null {
   const target = s.owner[to];
   if (!atWar(s, s.player, target) || !canAttackRegion(s, u, to)) return null;
   const title = regionTitle(to);
-  const r = landBattle(s, u, to);
+  const r = landBattle(s, u, to, Math.random(), join);
   if (r.won) {
     s.stability = clamp(s.stability - 1 - (playerRuling(s) === 'dem' ? 1 : 0) - (fx(REGION[to].c).aggressorStability ? 5 : 0), 0, 100);
     shiftParty(s.parties[s.player], 'nat', 2);
@@ -228,6 +228,7 @@ export function endTurn(s: GameState) {
   s.turn++;
   for (const u of s.units) u.acted = false;
   aiTurn(s);
+  mergeAll(s);
   updateUnrest(s);
   updateCapitals(s);
   if (!s.lost && owned(s).length === 0) {

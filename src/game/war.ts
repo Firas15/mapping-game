@@ -150,11 +150,33 @@ export function canAttackRegion(s: GameState, u: Unit, to: string) {
   return !!c && !(c.sea && seaBlocked(s, u.owner, c.sea));
 }
 
-export function moveArmy(s: GameState, u: Unit, to: string) {
-  if (!canMoveArmy(s, u, to)) return false;
+/** Moves an army; meeting another of ours there, the two become one. Returns the army now standing there. */
+export function moveArmy(s: GameState, u: Unit, to: string): Unit | null {
+  if (!canMoveArmy(s, u, to)) return null;
   u.at = to;
   u.acted = true;
-  return true;
+  return mergeAt(s, to, u.owner) ?? u;
+}
+
+/** Folds all armies of one owner in one region into a single army. */
+export function mergeAt(s: GameState, r: string, owner: string): Unit | null {
+  const here = armiesAt(s, r, owner);
+  if (here.length < 2) return here[0] ?? null;
+  const [first, ...rest] = here;
+  for (const x of rest) { first.str += x.str; first.acted = first.acted || x.acted; }
+  s.units = s.units.filter((x) => !rest.includes(x));
+  return first;
+}
+
+/** Merges every stack on the map (after the computer has moved). */
+export function mergeAll(s: GameState) {
+  const seen = new Set<string>();
+  for (const u of [...s.units]) {
+    const key = u.owner + '@' + u.at;
+    if (u.type !== 'army' || seen.has(key)) continue;
+    seen.add(key);
+    mergeAt(s, u.at, u.owner);
+  }
 }
 
 // ---------- strength ----------
@@ -207,22 +229,28 @@ export function defensePower(s: GameState, r: string) {
   return Math.max(1, local * defenseMul(s, r) + supportOf(s, r) + helpOf(s, o, r));
 }
 
-/** Every army of ours next to the target that hasn't acted joins the attack. */
-export function attackers(s: GameState, u: Unit, to: string) {
-  const group = s.units.filter((x) => x.type === 'army' && x.owner === u.owner && !x.acted && x.str >= 3 && x !== u
-    && canAttackRegion(s, x, to));
-  return [u, ...group];
+/** Our other armies that could join an attack on `to` (from any neighbouring region). */
+export const joinCandidates = (s: GameState, u: Unit, to: string) =>
+  s.units.filter((x) => x.type === 'army' && x.owner === u.owner && !x.acted && x.str >= 3 && x !== u && canAttackRegion(s, x, to));
+
+/**
+ * Who attacks: the chosen army plus the ones picked to join.
+ * Without a list (computer players) every army that can reach joins.
+ */
+export function attackers(s: GameState, u: Unit, to: string, join?: number[]) {
+  const extra = joinCandidates(s, u, to).filter((x) => !join || join.includes(x.id));
+  return [u, ...extra];
 }
 
-export function attackPower(s: GameState, u: Unit, to: string) {
+export function attackPower(s: GameState, u: Unit, to: string, join?: number[]) {
   const master = fx(u.owner).seaMaster || (u.owner === s.player && upgSeaMaster(s));
   const mul = attackMul(s, u.owner, to);
-  const own = attackers(s, u, to).reduce((sum, x) => sum + x.str * mul * (crossing(x.at, to)?.sea && !master ? 0.75 : 1), 0);
+  const own = attackers(s, u, to, join).reduce((sum, x) => sum + x.str * mul * (crossing(x.at, to)?.sea && !master ? 0.75 : 1), 0);
   return own + helpOf(s, u.owner, to);
 }
 
-export function chance(s: GameState, u: Unit, to: string) {
-  const a = attackPower(s, u, to) ** 2;
+export function chance(s: GameState, u: Unit, to: string, join?: number[]) {
+  const a = attackPower(s, u, to, join) ** 2;
   const d = defensePower(s, to) ** 2;
   return clamp(Math.round((a / (a + d)) * 100), 3, 97);
 }
@@ -290,13 +318,13 @@ export interface BattleResult {
   capital: boolean;
 }
 
-export function landBattle(s: GameState, u: Unit, to: string, roll = Math.random()): BattleResult {
+export function landBattle(s: GameState, u: Unit, to: string, roll = Math.random(), join?: number[]): BattleResult {
   const defender = s.owner[to];
-  const att = attackPower(s, u, to);
+  const att = attackPower(s, u, to, join);
   const def = defensePower(s, to);
-  const won = roll * 100 < chance(s, u, to);
+  const won = roll * 100 < chance(s, u, to, join);
   const local = armiesAt(s, to, defender);
-  const group = attackers(s, u, to);
+  const group = attackers(s, u, to, join);
   for (const x of group) x.acted = true;
   let loot = { money: 0, army: 0 };
   const capital = s.capital[defender] === to;
@@ -328,6 +356,17 @@ export function landBattle(s: GameState, u: Unit, to: string, roll = Math.random
 }
 
 // ---------- air ----------
+
+/** Own regions an air wing can fly to in one turn. */
+export const airMoves = (s: GameState, a: Unit) =>
+  [...airReach(a.at)].filter((r) => r !== a.at && s.owner[r] === a.owner);
+
+export function moveAir(s: GameState, a: Unit, to: string) {
+  if (a.type !== 'air' || a.acted || !airMoves(s, a).includes(to)) return false;
+  a.at = to;
+  a.acted = true;
+  return true;
+}
 
 /** Regions a wing based in `base` can reach: two steps by land or sea. */
 export function airReach(base: string) {

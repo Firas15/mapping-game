@@ -33,6 +33,8 @@ export interface MapState {
   capitals?: Record<string, string | null>;
   units?: Unit[];
   selectedUnit?: number | null;
+  /** armies added to the planned attack */
+  joining?: Set<number>;
   orders?: Orders | null;
   /** map-mode colours, region -> colour; political colours when absent */
   fill?: Record<string, string> | null;
@@ -45,8 +47,11 @@ export interface MapEvents {
 }
 
 const UNIT_ICON: Record<string, string> = {
-  // infantry: the crossed box of a military map symbol
-  army: 'M-5,-3.5 h10 v7 h-10 Z M-5,-3.5 L5,3.5 M5,-3.5 L-5,3.5',
+  // a soldier in a helmet with a rifle over the shoulder
+  army: 'M-3.6,-3.9 A3.6,2.9 0 0 1 3.6,-3.9 L4.4,-3.9 L4.4,-3.1 L-4.4,-3.1 L-4.4,-3.9 Z '
+    + 'M-2.1,-2.9 L2.1,-2.9 L2.1,-1.9 A2.1,1.9 0 0 1 -2.1,-1.9 Z '
+    + 'M-3.2,0 Q0,-1 3.2,0 L3.6,3.2 L2,3.2 L1.6,6.4 L0.4,6.4 L0,3.8 L-0.4,6.4 L-1.6,6.4 L-2,3.2 L-3.6,3.2 Z '
+    + 'M3.9,-6.4 L4.9,-6.4 L4.9,2.6 L3.9,2.6 Z',
   air: 'M0,-6 L1.3,-1.5 L6,1 L6,2.4 L1.3,1.2 L1,4.2 L2.6,5.4 L2.6,6.3 L0,5.6 L-2.6,6.3 L-2.6,5.4 L-1,4.2 L-1.3,1.2 L-6,2.4 L-6,1 L-1.3,-1.5 Z',
   fleet: 'M-7,1 L7,1 L5,4.5 L-5,4.5 Z M-1,-5 L-1,1 M-1,-5 L4,-1 L-1,-1',
 };
@@ -397,7 +402,7 @@ export class MapView {
       n.dataset.y = String(y);
       n.dataset.dx = String(sl.dx);
       n.dataset.dy = String(sl.dy);
-      n.setAttribute('class', `unit ${u.type}${u.owner === s.player ? ' mine' : ''}${u.acted ? ' acted' : ''}${s.selectedUnit === u.id ? ' sel' : ''}`);
+      n.setAttribute('class', `unit ${u.type}${u.owner === s.player ? ' mine' : ''}${u.acted ? ' acted' : ''}${s.selectedUnit === u.id ? ' sel' : ''}${s.joining?.has(u.id) ? ' join' : ''}`);
       const plate = n.querySelector<SVGRectElement>('.plate')!;
       plate.style.fill = COUNTRY[u.owner]?.color ?? '#666';
       n.querySelector('.glyph')!.setAttribute('d', UNIT_ICON[u.type]);
