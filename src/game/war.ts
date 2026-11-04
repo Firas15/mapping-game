@@ -158,6 +158,21 @@ export function moveArmy(s: GameState, u: Unit, to: string): Unit | null {
   return mergeAt(s, to, u.owner) ?? u;
 }
 
+/** Takes `n` soldiers out of an army as a new army standing in the same place. */
+export function splitArmy(s: GameState, u: Unit, n: number): Unit {
+  const take = Math.round(n);
+  if (u.type !== 'army' || take >= u.str || take < 1) return u;
+  u.str -= take;
+  return addUnit(s, u.owner, 'army', take, u.at);
+}
+
+/** Runs `fn` as if the army had `n` soldiers (for forecasts), then puts it back. */
+export function asIfStrength<T>(u: Unit, n: number, fn: () => T): T {
+  const real = u.str;
+  u.str = Math.max(1, Math.min(real, Math.round(n)));
+  try { return fn(); } finally { u.str = real; }
+}
+
 /** Folds all armies of one owner in one region into a single army. */
 export function mergeAt(s: GameState, r: string, owner: string): Unit | null {
   const here = armiesAt(s, r, owner);

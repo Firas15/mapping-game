@@ -13,8 +13,8 @@ import {
 } from '../game/rules';
 import {
   type PeaceTerms, airStrike, airTargets, atWar, attackers, attackPower, blocOf, canAttackRegion, canMoveArmy,
-  airMoves, cantDeclare, chance, declareWar, defensePower, enemiesOf, fleetMoves, friends, joinCandidates, keyRegions,
-  makePeace, moveAir, moveArmy, moveFleet, warPenalty,
+  airMoves, asIfStrength, cantDeclare, chance, declareWar, defensePower, enemiesOf, fleetMoves, friends, joinCandidates, keyRegions,
+  makePeace, moveAir, moveArmy, moveFleet, splitArmy, warPenalty,
 } from '../game/war';
 import {
   UNIT_INFO, armyTotal, build, cantBuild, cantReinforce, disband, draft, draftCap, maxArmies, price,
@@ -80,6 +80,13 @@ export class App {
   private target: string | null = null;
   /** other armies the player has added to the planned attack */
   private joiners = new Set<number>();
+  /** soldiers the player wants to send from the selected army; null = all of them */
+  private send: number | null = null;
+
+  /** How many soldiers of this army the next order uses. */
+  private amount(u: Unit) {
+    return Math.max(1, Math.min(u.str, Math.round(this.send ?? u.str)));
+  }
   private mode: MapMode = 'political';
   private map: MapView;
   private tutorial = new Tutorial($('#tutorial'));
@@ -262,9 +269,12 @@ export class App {
     if (u && id && u.owner === s.player) {
       if (u.type === 'army' && canMoveArmy(s, u, id)) {
         const before = armiesAt(s, id, s.player).length;
-        const m = moveArmy(s, u, id);
-        this.unitSel = m?.id ?? null;
+        const part = this.amount(u) < u.str ? splitArmy(s, u, this.amount(u)) : u;
+        const m = moveArmy(s, part, id);
+        this.unitSel = part !== u ? u.id : m?.id ?? null;
+        this.send = null;
         if (before) this.toast('Армии объединились', 'info');
+        else if (part !== u) this.toast(`Отправлено ${part.str}, на месте осталось ${u.str}`, 'info');
         play('select');
         this.target = null;
         this.selected = id;
@@ -313,6 +323,7 @@ export class App {
     }
     if (u.owner === s.player) {
       this.unitSel = this.unitSel === id ? null : id;
+      this.send = null;
       this.target = null;
       if (!SEA[u.at]) this.selected = u.at;
       play('select');
@@ -349,7 +360,8 @@ export class App {
       const near = neighbours(u.at);
       return {
         moves: near.filter((r) => canMoveArmy(s, u, r)),
-        attacks: near.filter((r) => canAttackRegion(s, u, r)).map((r) => ({ r, ch: chance(s, u, r), war: atWar(s, s.player, s.owner[r]) })),
+        attacks: asIfStrength(u, this.amount(u), () => near.filter((r) => canAttackRegion(s, u, r))
+          .map((r) => ({ r, ch: chance(s, u, r), war: atWar(s, s.player, s.owner[r]) }))),
         strikes: [], zones: [],
       };
     }
@@ -361,6 +373,19 @@ export class App {
   }
 
   // ---------- actions ----------
+
+  /** Refreshes the attack forecast numbers without rebuilding the panel. */
+  private updateForecast(u: Unit) {
+    const s = this.s!;
+    const t = this.target;
+    if (!t || !document.getElementById('att-chance')) return;
+    const join = [...this.joiners];
+    const n = this.amount(u);
+    const ch = asIfStrength(u, n, () => chance(s, u, t, join));
+    $('#att-chance').textContent = `${ch}%`;
+    $('#att-bar').style.width = `${ch}%`;
+    $('#att-power').textContent = fmt(asIfStrength(u, n, () => attackPower(s, u, t, join)));
+  }
 
   private async doAttack(u: Unit, to: string) {
     const s = this.s!;
@@ -374,7 +399,9 @@ export class App {
     const join = [...this.joiners];
     const group = attackers(s, u, to, join).length;
     await this.map.playStrike(u.at, to, COUNTRY[s.player].color, 'attack');
-    const r = playerAttack(s, u, to, join);
+    const part = this.amount(u) < u.str ? splitArmy(s, u, this.amount(u)) : u;
+    this.send = null;
+    const r = playerAttack(s, part, to, join);
     this.joiners.clear();
     this.busy = false;
     this.target = null;
@@ -574,8 +601,9 @@ export class App {
         const enemy = s.owner[t];
         const war = atWar(s, s.player, enemy);
         const join = [...this.joiners];
+        const n = this.amount(u);
         const group = attackers(s, u, t, join);
-        const ch = chance(s, u, t, join);
+        const ch = asIfStrength(u, n, () => chance(s, u, t, join));
         const cands = joinCandidates(s, u, t);
         const joinList = cands.length ? `
           <div class="join-title">Подключить к удару <span class="muted">армии из соседних областей</span></div>
@@ -585,9 +613,9 @@ export class App {
         body = `
           <div class="battle">
             <div class="battle-title">${icon('swords', 15)} Атака: ${regionTitle(t)} <img src="${flagUrl(enemy)}" alt="" class="flag-s"></div>
-            <div class="battle-row"><span>Наша сила${group.length > 1 ? ` (армий: ${group.length})` : ''}</span><b>${fmt(attackPower(s, u, t, join))}</b></div>
+            <div class="battle-row"><span>Наша сила${group.length > 1 ? ` (армий: ${group.length})` : ''}</span><b id="att-power">${fmt(asIfStrength(u, n, () => attackPower(s, u, t, join)))}</b></div>
             <div class="battle-row"><span>Оборона</span><b>${fmt(defensePower(s, t))}</b></div>
-            <div class="chance"><div class="chance-bar"><i style="width:${ch}%"></i></div><span>Шанс победы <b>${ch}%</b></span></div>
+            <div class="chance"><div class="chance-bar"><i id="att-bar" style="width:${ch}%"></i></div><span>Шанс победы <b id="att-chance">${ch}%</b></span></div>
             ${war ? '' : `<div class="warn-line">${icon('flag', 14)} Войны с этой страной нет. Атака объявит её: −${warPenalty(s)} стабильности</div>`}
           </div>
           ${joinList}
@@ -597,6 +625,15 @@ export class App {
         body = `<div class="note">Армия уже действовала в этом ходу.</div>`;
       } else {
         body = `<div class="hint">${icon('next', 14)} Зелёная стрелка — перейти (армии в одной области объединяются). Процент — атаковать: нажмите, затем можно подключить армии из соседних областей.</div>`;
+      }
+      if (!u.acted && u.str >= 2) {
+        const n = this.amount(u);
+        body = `
+          <div class="send">
+            <div class="send-top"><span>Отправить</span><b id="send-val">${n}</b><span class="muted">из ${u.str}</span></div>
+            <input type="range" id="send" min="1" max="${u.str}" step="1" value="${n}" aria-label="Сколько солдат отправить">
+            <div class="send-btns"><button class="seg-btn" data-send="half">Половина</button><button class="seg-btn" data-send="all">Все</button></div>
+          </div>` + body;
       }
       const why = cantReinforce(s, u);
       body += `
@@ -745,6 +782,25 @@ export class App {
     on('cancel-target', () => { this.target = null; this.renderPanel(); });
     if (u) {
       on('attack', () => { if (this.target) void this.doAttack(u, this.target); });
+      const slider = document.getElementById('send') as HTMLInputElement | null;
+      if (slider) {
+        // live numbers while dragging; the panel is redrawn only when the drag ends
+        slider.oninput = () => {
+          this.send = Number(slider.value);
+          $('#send-val').textContent = slider.value;
+          this.updateForecast(u);
+          this.updateMap();
+        };
+        slider.onchange = () => this.renderPanel();
+      }
+      $('#panel').querySelectorAll<HTMLButtonElement>('[data-send]').forEach((b) => {
+        b.onclick = () => {
+          this.send = b.dataset.send === 'half' ? Math.max(1, Math.round(u.str / 2)) : null;
+          play('click');
+          this.renderPanel();
+          this.updateMap();
+        };
+      });
       on('reinforce', () => this.act(() => { if (reinforceUnit(s, u)) play('recruit'); }));
       $('#panel').querySelectorAll<HTMLButtonElement>('[data-join]').forEach((b) => {
         b.onclick = () => {

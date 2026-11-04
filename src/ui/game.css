@@ -189,3 +189,12 @@ details.more > * + * { margin-top: 10px; }
 .join-row .join-tick { font-size: 12px; font-weight: 700; color: var(--muted); min-width: 74px; text-align: right; }
 .join-row.on { border-color: var(--gold); background: rgba(240, 185, 77, .1); }
 .join-row.on .join-tick { color: var(--gold); }
+
+/* how many soldiers to send */
+.send { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line-2); }
+.send-top { display: flex; align-items: baseline; gap: 6px; font-size: 13px; font-weight: 600; }
+.send-top b { font-size: 20px; font-weight: 800; color: var(--gold); margin-left: auto; font-variant-numeric: tabular-nums; }
+.send input[type="range"] { width: 100%; accent-color: var(--gold); height: 22px; cursor: pointer; }
+.send-btns { display: flex; gap: 4px; }
+.send-btns .seg-btn { flex: 1; background: var(--surface-2); }
+.send-btns .seg-btn:hover { color: var(--text); }
