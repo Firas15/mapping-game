@@ -91,11 +91,18 @@ export class MapView {
   private gOrders: Selection<SVGGElement, unknown, null, undefined>;
   private gUnits: Selection<SVGGElement, unknown, null, undefined>;
   private gFx: Selection<SVGGElement, unknown, null, undefined>;
+  private gMountains: Selection<SVGGElement, unknown, null, undefined>;
+  private gRivers: Selection<SVGGElement, unknown, null, undefined>;
+  private pHover: Selection<SVGPathElement, unknown, null, undefined>;
+  private gFlash: Selection<SVGGElement, unknown, null, undefined>;
+  private peaks: Selection<SVGPatternElement, unknown, null, undefined>;
+  private rivers: { name: string; line: [number, number][] }[];
 
   constructor(host: HTMLElement, topo: unknown, on: MapEvents) {
     this.host = host;
     this.on = on;
     this.topo = topo as Topology<{ land: GeometryCollection }>;
+    this.rivers = (topo as { rivers?: { name: string; line: [number, number][] }[] }).rivers ?? [];
     const fc = feature(this.topo, this.topo.objects.land) as unknown as { features: RegionFeature[] };
     for (const f of fc.features) {
       if (REGION[f.id]) {
@@ -114,6 +121,11 @@ export class MapView {
     const pat = defs.append('pattern').attr('id', 'hatch').attr('patternUnits', 'userSpaceOnUse')
       .attr('width', 7).attr('height', 7).attr('patternTransform', 'rotate(45)');
     pat.append('rect').attr('width', 2.2).attr('height', 7).attr('fill', 'rgba(255,255,255,0.32)');
+    // little peaks over mountain regions; resized on zoom so they keep their screen size
+    this.peaks = defs.append('pattern').attr('id', 'peaks').attr('patternUnits', 'userSpaceOnUse')
+      .attr('width', 14).attr('height', 12);
+    this.peaks.append('path').attr('d', 'M1,9 L4.5,4 L8,9 M6.5,7 L9,3.5 L12.5,9')
+      .attr('fill', 'none').attr('stroke', 'rgba(255,255,255,0.3)').attr('stroke-width', 1).attr('stroke-linejoin', 'round');
 
     svg.append('rect').attr('class', 'sea').attr('width', '100%').attr('height', '100%')
       .on('click', () => this.on.region(null));
@@ -122,6 +134,12 @@ export class MapView {
     this.gSeaNames = this.root.append('g').attr('class', 'sea-names');
     this.gContext = this.root.append('g').attr('class', 'context');
     this.gRegions = this.root.append('g').attr('class', 'countries');
+    this.gMountains = this.root.append('g').attr('class', 'mountains');
+    this.gRivers = this.root.append('g').attr('class', 'rivers');
+    // hover and flash highlights are separate shapes: CSS filters on huge zoomed
+    // paths make Chrome drop them for a moment
+    this.pHover = this.root.append('path').attr('class', 'hover');
+    this.gFlash = this.root.append('g').attr('class', 'flashes');
     this.gTargets = this.root.append('g').attr('class', 'targets');
     this.gNations = this.root.append('g').attr('class', 'nations');
     this.gSea = this.root.append('g').attr('class', 'sea-links');
@@ -141,7 +159,8 @@ export class MapView {
         this.t = e.transform;
         this.root.attr('transform', this.t.toString());
         this.placeOverlays();
-      });
+      })
+      .on('end', () => this.peaks.attr('patternTransform', `scale(${1 / this.t.k})`));
     svg.call(this.zoomer).on('dblclick.zoom', null);
 
     new ResizeObserver(() => this.layout()).observe(host);
@@ -187,7 +206,13 @@ export class MapView {
     this.gRegions.selectAll<SVGPathElement, RegionFeature>('path').data(this.regions, (f) => f.id)
       .join('path')
       .attr('d', (f) => this.path(f))
-      .on('click', (e: MouseEvent, f) => { e.stopPropagation(); this.on.region(f.id); });
+      .on('click', (e: MouseEvent, f) => { e.stopPropagation(); this.on.region(f.id); })
+      .on('mouseenter', (_e: MouseEvent, f) => this.pHover.attr('d', this.path(f)))
+      .on('mouseleave', () => this.pHover.attr('d', null));
+    this.gMountains.selectAll<SVGPathElement, RegionFeature>('path').data(this.regions.filter((f) => REGION[f.id].mountain), (f) => f.id)
+      .join('path').attr('d', (f) => this.path(f));
+    this.gRivers.selectAll<SVGPathElement, (typeof this.rivers)[number]>('path').data(this.rivers)
+      .join('path').attr('d', (r) => this.path({ type: 'LineString', coordinates: r.line }));
     this.gSeaNames.selectAll<SVGGElement, (typeof SEAS)[number]>('g').data(SEAS.filter((z) => z.id !== 'CASP'), (z) => z.id)
       .join((enter) => {
         const g = enter.append('g').attr('class', 'sea-name');
@@ -487,12 +512,10 @@ export class MapView {
   /** Briefly highlights regions that just changed hands. */
   flash(ids: string[]) {
     if (!ids.length) return;
-    const set = new Set(ids);
-    const paths = this.gRegions.selectAll<SVGPathElement, RegionFeature>('path').filter((f) => set.has(f.id));
-    paths.classed('flash', false);
-    void this.el.getBoundingClientRect(); // restart the animation
-    paths.classed('flash', true);
-    setTimeout(() => paths.classed('flash', false), 2600);
+    const shapes = ids.map((id) => this.byId.get(id)).filter((f): f is RegionFeature => !!f);
+    const g = this.gFlash.append('g');
+    for (const f of shapes) g.append('path').attr('class', 'flash').attr('d', this.path(f));
+    setTimeout(() => g.remove(), 2600);
   }
 
   zoomBy(f: number) {

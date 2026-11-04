@@ -3,7 +3,7 @@ import { COUNTRY, flagUrl } from '../data/countries';
 import { REGIONS } from '../data/regions';
 import { type GameState, DIFFICULTY, ownedBy } from '../game/state';
 import { METRICS, type Metric, ACHIEVEMENTS, ranking } from '../game/stats';
-import { FOCUS, available, focusesOf } from '../game/focus';
+import { COURSES, FOCUS, available, coursesOpen, focusesOf } from '../game/focus';
 import { type PeaceTerms, reparationsOf, warOf } from '../game/war';
 import { peaceAnswer, warScore } from '../game/rules';
 import { icon } from './icons';
@@ -51,7 +51,28 @@ export function focusHtml(s: GameState) {
   return `
     <div class="win-top"><h3>Национальные цели</h3><button class="icon-btn" data-m="close" aria-label="Закрыть">${icon('close', 16)}</button></div>
     <p class="muted">Выберите одну цель. Через несколько ходов она даст свой бонус навсегда. Затем можно взять следующую.</p>
-    <div class="goals">${cards}</div>`;
+    <div class="goals">${cards}</div>
+    ${courseHtml(s)}`;
+}
+
+/** Lasting course, open once every goal is done. */
+function courseHtml(s: GameState) {
+  const open = coursesOpen(s, s.player);
+  const cur = s.focus[s.player].course;
+  const left = available(s, s.player).length + (s.focus[s.player].cur ? 1 : 0);
+  const cards = COURSES.map((c) => {
+    const on = open && cur === c.id;
+    return `
+      <button class="course ${open ? 'open' : 'locked'} ${on ? 'on' : ''}" data-course="${c.id}">
+        <span class="goal-icon">${icon(c.icon, 17)}</span><b>${c.name}</b><span class="goal-text">${c.text}</span>
+        ${on ? '<span class="course-tag">Выбран</span>' : ''}
+      </button>`;
+  }).join('');
+  const hint = open ? 'Действует каждый ход, пока выбран. Сменить можно в любой момент.'
+    : `Откроется, когда выполните все цели (осталось ${left})`;
+  return `
+    <div class="course-head"><h4>${icon('repeat', 16)} Постоянный курс</h4><span class="muted small">${hint}</span></div>
+    <div class="courses">${cards}</div>`;
 }
 
 export function peaceHtml(s: GameState, n: string) {

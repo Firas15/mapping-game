@@ -1,6 +1,5 @@
 import { feature } from 'topojson-client';
-import type { Topology, GeometryCollection } from 'topojson-specification';
-import europe from './europe.json';
+import { type RegionProps, europe } from './map';
 import { COUNTRY } from './countries';
 
 export interface RegionDef {
@@ -23,6 +22,10 @@ export interface RegionDef {
   pop: number;
   /** sea zones it touches; empty for inland regions */
   coast: string[];
+  /** mountains: defenders fight better */
+  mountain: boolean;
+  /** neighbour -> big river between them */
+  rivers: Record<string, string>;
 }
 
 /**
@@ -43,10 +46,7 @@ const MEN_WEIGHT: Record<RegionKind, number> = { industry: 0, hub: 0.6, manpower
 /** Soldiers a whole country raises per turn, as a share of its starting army. */
 const MEN_SHARE = 0.07;
 
-interface Props { c?: string; n?: string; a?: number; pop?: number; cap?: number; p?: [number, number]; z?: string[] }
-
-const topo = europe as unknown as Topology<{ land: GeometryCollection<Props> }>;
-const raw = (feature(topo, topo.objects.land) as unknown as { features: { id: string; properties: Props }[] }).features
+const raw = (feature(europe, europe.objects.land) as unknown as { features: { id: string; properties: RegionProps }[] }).features
   .filter((f) => f.properties.c && COUNTRY[f.properties.c]);
 
 export const REGIONS: RegionDef[] = [];
@@ -93,6 +93,8 @@ for (const [c, list] of byCountry) {
       capital: !!f.properties.cap, point: f.properties.p, kind: kinds.get(f.id)!, eco: eco[i], men: men[i],
       pop: f.properties.pop ?? 0,
       coast: f.properties.z ?? [],
+      mountain: !!f.properties.m,
+      rivers: f.properties.rv ?? {},
     });
   });
 }

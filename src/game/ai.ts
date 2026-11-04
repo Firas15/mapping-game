@@ -81,7 +81,9 @@ function frontier(s: GameState, n: string) {
 
 function production(s: GameState, n: string) {
   const m = s.ai[n];
-  const reserve = Math.max(30, incomeOf(s, n) * 0.5);
+  // at war with the player everything goes into the army
+  const vsPlayer = n !== s.player && atWar(s, n, s.player);
+  const reserve = vsPlayer ? 10 : Math.max(30, incomeOf(s, n) * 0.5);
   const cap = armyCap(s, n);
   const front = frontier(s, n);
   const spot = front.find((x) => canRaiseIn(s, n, x.r))?.r ?? (s.capital[n] && canRaiseIn(s, n, s.capital[n]!) ? s.capital[n]! : null);
@@ -91,7 +93,7 @@ function production(s: GameState, n: string) {
     build(s, n, 'army', spot);
   }
   // top up the armies on the most threatened ground
-  for (let guard = 0; guard < 8; guard++) {
+  for (let guard = 0; guard < (vsPlayer ? 14 : 8); guard++) {
     if (m.money < price(s, n, 'reinforce') + reserve || armyTotal(s, n) >= cap) break;
     const onFront = unitsOf(s, n, 'army').filter((u) => s.owner[u.at] === n);
     if (!onFront.length) break;
@@ -137,14 +139,15 @@ function maybeDeclare(s: GameState, n: string) {
     // close friends don't fight; old rivals need less of a reason
     if (aff >= 45) continue;
     let need: number = NEED[ruling] * clamp(1 + aff / 120, 0.7, 1.4);
+    const theirs = backedPower(s, o);
     if (o === s.player) {
       if (s.turn < PLAYER_SAFE_UNTIL || isAlly(s, n) || relation(s, n) >= 40) continue;
       // a sprawling player looks like a threat worth stopping
-      need -= Math.min(0.4, Math.max(0, owned(s).length - 10) * 0.02);
+      need -= Math.min(0.5, Math.max(0, owned(s).length - 10) * 0.025);
       need += clamp(relation(s, n) / 100, -0.15, 0.4);
       need *= DIFFICULTY[s.settings.difficulty].caution;
     }
-    const ratio = mine / (backedPower(s, o) + 1);
+    const ratio = mine / (theirs + 1);
     if (ratio < need) continue;
     const score = ratio + ownedBy(s, o).reduce((sum, r) => sum + REGION[r].eco, 0) / 200 - aff / 60;
     if (score > bestScore) { bestScore = score; best = o; }
@@ -228,6 +231,38 @@ function stepsTo(s: GameState, n: string, from: string, goal: string, limit = 4)
   return Infinity;
 }
 
+/**
+ * An army on a threatened front strikes first when it's likely to win: at the
+ * enemy army next door, or to free a region of its own country.
+ */
+function counterattack(s: GameState, n: string, u: Unit, enemies: Set<string>) {
+  const nerve = Math.max(NERVE[s.ruling[n]], 62);
+  let best: string | null = null;
+  let bestScore = -Infinity;
+  for (const r of neighbours(u.at)) {
+    const o = s.owner[r];
+    if (!enemies.has(o) || !canAttackRegion(s, u, r)) continue;
+    if (o === s.player && s.turn < PLAYER_SAFE_UNTIL) continue;
+    const ours = REGION[r].c === n;
+    const foes = armiesAt(s, r, o).reduce((a, x) => a + x.str, 0);
+    if (!ours && !foes) continue;
+    const ch = chance(s, u, r);
+    if (ch < nerve - (ours ? 8 : 0)) continue;
+    const score = ch + (ours ? 25 : 0) + foes * 0.3;
+    if (score > bestScore) { bestScore = score; best = r; }
+  }
+  if (!best) return false;
+  const defender = s.owner[best];
+  const res = landBattle(s, u, best);
+  s.events.push({ attacker: n, defender, target: best, won: res.won, eliminated: res.eliminated });
+  if (defender === s.player) {
+    if (res.won) log(s, `Контрудар: ${COUNTRY[n].name} взяла ${regionTitle(best)}`, 'bad');
+    else log(s, `Отбили контрудар: ${regionTitle(best)}`, 'good');
+  }
+  if (res.eliminated) log(s, `${COUNTRY[defender].name} больше не существует`, defender === s.player ? 'bad' : 'info');
+  return true;
+}
+
 function actArmies(s: GameState, n: string) {
   const ruling = s.ruling[n];
   const enemies = new Set(enemiesOf(s, n));
@@ -238,19 +273,24 @@ function actArmies(s: GameState, n: string) {
   if (enemies.size) {
     for (const d of dangerMap(s, n, enemies)) {
       if (d.danger < 45) continue;
-      const here = armiesAt(s, d.r, n);
+      const here = armiesAt(s, d.r, n).filter((u) => !u.acted);
+      // the best defence is hitting back: strike the region the threat comes from,
+      // or take our own land back, when the odds are good
+      if (here.length && counterattack(s, n, here[0], enemies)) continue;
       // whoever already stands there holds the line
       for (const u of here) busy.add(u.id);
       if (here.length && d.danger < 65) continue;
-      // bring the closest free army one step nearer
-      const helper = armies()
+      // bring the closest free armies one step nearer, two when it's grave
+      const helpers = armies()
         .map((u) => ({ u, steps: stepsTo(s, n, u.at, d.r) }))
         .filter((x) => x.steps <= 3)
-        .sort((a, b) => a.steps - b.steps || b.u.str - a.u.str)[0];
-      if (!helper) continue;
-      busy.add(helper.u.id);
-      const step = stepToward(s, n, helper.u.at, d.r);
-      if (step && crossing(helper.u.at, step)) { helper.u.at = step; helper.u.acted = true; }
+        .sort((a, b) => a.steps - b.steps || b.u.str - a.u.str)
+        .slice(0, d.danger >= 70 ? 2 : 1);
+      for (const helper of helpers) {
+        busy.add(helper.u.id);
+        const step = stepToward(s, n, helper.u.at, d.r);
+        if (step && crossing(helper.u.at, step)) { helper.u.at = step; helper.u.acted = true; }
+      }
     }
   }
 
@@ -266,10 +306,11 @@ function actArmies(s: GameState, n: string) {
         if (!enemies.has(o) || !canAttackRegion(s, u, r)) continue;
         if (o === s.player && s.turn < PLAYER_SAFE_UNTIL) continue;
         const ch = chance(s, u, r);
-        if (ch < NERVE[ruling]) continue;
         const reg = REGION[r];
+        // braver when taking our own land back
+        if (ch < NERVE[ruling] - (reg.c === n ? 10 : 0)) continue;
         const far = Math.max(0, (home.get(r) ?? 6) - 2);
-        const score = ch + reg.eco * 0.5 + reg.men * 3 + (s.capital[o] === r ? 25 : 0) + (reg.c === n ? 30 : 0)
+        const score = ch + reg.eco * 0.5 + reg.men * 3 + (s.capital[o] === r ? 25 : 0) + (reg.c === n ? 45 : 0)
           - far * 18 + Math.random() * 8;
         if (score > bestScore) { bestScore = score; best = r; }
       }

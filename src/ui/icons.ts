@@ -1,7 +1,8 @@
 import {
   createElement, Coins, Swords, Megaphone, Factory, Shield, PartyPopper, Handshake, Users, Bird, Landmark,
   Castle, Flag, Vote, Smile, CircleHelp, RotateCcw, ZoomIn, ZoomOut, Crosshair, X, ChevronRight, Trophy,
-  Hourglass, Sparkles, Star, Volume2, VolumeX, type IconNode,
+  Hourglass, Sparkles, Star, Volume2, VolumeX, MountainSnow, Waves, Truck, Play, BookOpen, ChevronLeft, Repeat, Map as MapIcon,
+  type IconNode,
 } from 'lucide';
 
 const ICONS: Record<string, IconNode> = {
@@ -9,7 +10,8 @@ const ICONS: Record<string, IconNode> = {
   handshake: Handshake, users: Users, dove: Bird, bank: Landmark, castle: Castle, flag: Flag, ballot: Vote,
   smile: Smile, help: CircleHelp, restart: RotateCcw, zoomIn: ZoomIn, zoomOut: ZoomOut, target: Crosshair,
   close: X, next: ChevronRight, trophy: Trophy, hourglass: Hourglass, sparkles: Sparkles, star: Star,
-  sound: Volume2, mute: VolumeX,
+  sound: Volume2, mute: VolumeX, mountain: MountainSnow, river: Waves, supply: Truck, play: Play, book: BookOpen,
+  prev: ChevronLeft, repeat: Repeat, map: MapIcon,
 };
 
 export function icon(name: string, size = 18): string {

@@ -1,47 +1,70 @@
-// Builds src/data/europe.json: playable countries split into regions, plus
+// Builds public/europe.json: playable countries split into regions, plus
 // neighbouring land for context.
 //
-// Sources (both Natural Earth):
-//  - world-atlas 1:50m countries decide which country owns which piece of land
-//    (so disputed areas follow that dataset, e.g. Crimea belongs to Russia);
-//  - 1:10m admin-1 provinces give the inner borders. Provinces of one country
-//    are grouped into a handful of game regions.
+// Sources (all Natural Earth 1:10m, downloaded once into .cache/):
+//  - admin-1 provinces give borders and owners (disputed areas follow that
+//    dataset, e.g. Crimea belongs to Russia). Provinces of one country are
+//    grouped into a handful of game regions;
+//  - populated places give population;
+//  - mountain ranges and rivers give terrain.
 //
-// Run: npm run build:map   (downloads the provinces file once into .cache/)
+// Run: npm run build:map
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import { feature, merge } from 'topojson-client';
 import { topology } from 'topojson-server';
 import { presimplify, simplify, quantile } from 'topojson-simplify';
 import { geoArea, geoCentroid, geoContains } from 'd3-geo';
 import pc from 'polygon-clipping';
 
-const require = createRequire(import.meta.url);
-const world = require('world-atlas/countries-50m.json');
-
 const ADMIN1_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson';
 const ADMIN1_FILE = '.cache/ne_10m_admin_1.geojson';
 const PLACES_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_populated_places_simple.geojson';
 const PLACES_FILE = '.cache/ne_10m_places.geojson';
+const RANGES_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_geography_regions_polys.geojson';
+const RANGES_FILE = '.cache/ne_10m_geo_regions.geojson';
+const RIVERS_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_rivers_lake_centerlines.geojson';
+const RIVERS_FILE = '.cache/ne_10m_rivers.geojson';
 // Share of border detail kept after simplification (smaller = lighter file).
 const KEEP = Number(process.env.KEEP ?? 0.09);
 
-// Natural Earth country name -> game code
+// Natural Earth admin name -> game code. Microstates and small territories join
+// the country around them so the map has no holes.
 const PLAYABLE = {
-  Portugal: 'PT', Spain: 'ES', France: 'FR', 'United Kingdom': 'GB', Ireland: 'IE',
-  Belgium: 'BE', Netherlands: 'NL', Luxembourg: 'LU', Germany: 'DE', Switzerland: 'CH',
-  Austria: 'AT', Italy: 'IT', Denmark: 'DK', Norway: 'NO', Sweden: 'SE', Finland: 'FI',
-  Iceland: 'IS', Poland: 'PL', Czechia: 'CZ', Slovakia: 'SK', Hungary: 'HU',
-  Slovenia: 'SI', Croatia: 'HR', 'Bosnia and Herz.': 'BA', Serbia: 'RS', Montenegro: 'ME',
+  Portugal: 'PT', Spain: 'ES', Andorra: 'ES', Gibraltar: 'ES', France: 'FR', Monaco: 'FR',
+  'United Kingdom': 'GB', Jersey: 'GB', Guernsey: 'GB', 'Isle of Man': 'GB', Ireland: 'IE',
+  Belgium: 'BE', Netherlands: 'NL', Luxembourg: 'LU', Germany: 'DE', Switzerland: 'CH', Liechtenstein: 'CH',
+  Austria: 'AT', Italy: 'IT', 'San Marino': 'IT', Vatican: 'IT', Denmark: 'DK', 'Faroe Islands': 'DK',
+  Norway: 'NO', Sweden: 'SE', Finland: 'FI', Aland: 'FI',
+  Iceland: 'IS', Poland: 'PL', 'Czech Republic': 'CZ', Slovakia: 'SK', Hungary: 'HU',
+  Slovenia: 'SI', Croatia: 'HR', 'Bosnia and Herzegovina': 'BA', 'Republic of Serbia': 'RS', Montenegro: 'ME',
   Kosovo: 'XK', Macedonia: 'MK', Albania: 'AL', Greece: 'GR', Bulgaria: 'BG',
   Romania: 'RO', Moldova: 'MD', Ukraine: 'UA', Belarus: 'BY', Lithuania: 'LT',
   Latvia: 'LV', Estonia: 'EE', Russia: 'RU', Turkey: 'TR', Cyprus: 'CY',
-  'N. Cyprus': 'CY', // the island is one country
+  // the island is one country
+  'Northern Cyprus': 'CY', 'Dhekelia Sovereign Base Area': 'CY', 'Akrotiri Sovereign Base Area': 'CY',
+};
+
+// Mountain ranges that slow attackers down (Natural Earth names).
+const MOUNTAINS = new Set([
+  'ALPS', 'PYRENEES', 'CARPATHIAN MOUNTAINS', 'Transylvanian Alps', 'Tatra Mts.', 'Dinaric Alps',
+  'Balkan Mts.', 'Pindus Mts.', 'APPENNINI', 'KJØLEN MOUNTAINS', 'Hardanger-vidda', 'URAL MOUNTAINS',
+  'Cord. Cantábrica', 'S. Nevada', 'Taurus Mts.', 'PONTIC MOUNTAINS', 'CAUCASUS MTS.', 'Grampian Mts.',
+  'Jura', 'Böhmerwald', 'Sudetes Mts.',
+]);
+/** A region is mountainous when this share of it lies in a range. */
+const MOUNTAIN_SHARE = Number(process.env.MSHARE ?? 0.4);
+// Narrow border ranges cover little area but still block armies.
+const RANGE_WEIGHT = { PYRENEES: 2.2, 'Cord. Cantábrica': 1.6, 'URAL MOUNTAINS': 1.4, 'Taurus Mts.': 1.5, 'PONTIC MOUNTAINS': 1.5 };
+// Big rivers: attacking across one is harder. Natural Earth name -> game name.
+const RIVERS = {
+  Rhine: 'Рейн', Rhein: 'Рейн', Rhin: 'Рейн', Waal: 'Рейн', Danube: 'Дунай', Donau: 'Дунай',
+  Dnipro: 'Днепр', Dnepre: 'Днепр', Vistula: 'Висла', Oder: 'Одер', Elbe: 'Эльба', Volga: 'Волга',
+  Don: 'Дон', Dniester: 'Днестр', Daugava: 'Даугава', Po: 'По', Loire: 'Луара',
 };
 
 // How many regions each country gets. Missing = 1.
 const REGION_COUNT = {
-  RU: 14, DE: 10, FR: 12, GB: 9, IT: 10, ES: 10, TR: 10, PL: 8, UA: 10, SE: 7, NO: 6, FI: 6, RO: 7,
+  RU: 24, DE: 10, FR: 12, GB: 9, IT: 10, ES: 10, TR: 10, PL: 8, UA: 10, SE: 7, NO: 6, FI: 6, RO: 7,
   BY: 5, GR: 5, BG: 4, HU: 4, AT: 4, CZ: 4, PT: 4, RS: 4, IE: 3, DK: 3, NL: 3, BE: 3, CH: 3,
   IS: 2, BA: 3, HR: 3, SK: 3, LT: 3, LV: 3, EE: 2, AL: 2, MK: 2, MD: 2, SI: 2, ME: 2, XK: 2,
 };
@@ -68,6 +91,9 @@ const CAPITAL_NAMES = {
   XK: 'Приштина', MK: 'Скопье', AL: 'Тирана', GR: 'Афины', BG: 'София', RO: 'Бухарест', MD: 'Кишинёв',
   UA: 'Киев', BY: 'Минск', LT: 'Вильнюс', LV: 'Рига', EE: 'Таллин', RU: 'Москва', TR: 'Анкара', CY: 'Никосия',
 };
+
+// Shorter or neutral names for a few regions.
+const NAME_FIX = { 'Автономная Республика Крым': 'Крым', 'Ханты-Мансийский автономный округ — Югра': 'Югра' };
 
 // Provinces that become a region of their own however small (exclaves).
 const OWN_REGION = new Set(['Kaliningrad']);
@@ -100,19 +126,7 @@ const clip = (g) => {
   return out.length ? { type: 'MultiPolygon', coordinates: rewind(out) } : null;
 };
 
-// ---------- 1. country shapes decide ownership ----------
-
-const countryShape = new Map();
-for (const f of feature(world, world.objects.countries).features) {
-  const code = PLAYABLE[f.properties.name];
-  if (!code || !f.geometry) continue;
-  const g = clip(f.geometry);
-  if (!g) continue;
-  const prev = countryShape.get(code);
-  countryShape.set(code, prev ? { type: 'MultiPolygon', coordinates: rewind(pc.union(prev.coordinates, g.coordinates)) } : g);
-}
-
-// ---------- 2. provinces ----------
+// ---------- 1. provinces ----------
 
 async function cached(url, file) {
   if (!fs.existsSync(file)) {
@@ -126,6 +140,8 @@ async function cached(url, file) {
 }
 const admin1 = await cached(ADMIN1_URL, ADMIN1_FILE);
 const places = await cached(PLACES_URL, PLACES_FILE);
+const rangesSrc = await cached(RANGES_URL, RANGES_FILE);
+const riversSrc = await cached(RIVERS_URL, RIVERS_FILE);
 
 const provinces = []; // playable
 const context = new Map(); // admin name -> geometries
@@ -135,8 +151,7 @@ for (const f of admin1.features) {
   if (!f.geometry || pt[0] < W - 3 || pt[0] > E + 3 || pt[1] < S - 2) continue;
   const g = clip(f.geometry);
   if (!g) continue;
-  let code = null;
-  for (const [c, shape] of countryShape) if (geoContains(shape, pt)) { code = c; break; }
+  const code = PLAYABLE[p.admin];
   if (code) {
     provinces.push({
       code, geometry: g, name: p.name_ru || p.name, en: p.name,
@@ -203,7 +218,7 @@ function cluster(items, k) {
 
 const regionOf = new Map(); // province -> region id
 const regionMeta = new Map(); // region id -> { code, name, area, cap }
-for (const code of countryShape.keys()) {
+for (const code of new Set(provinces.map((p) => p.code))) {
   const mine = provinces.filter((p) => p.code === code);
   if (!mine.length) throw new Error('no provinces for ' + code);
   const own = mine.filter((p) => OWN_REGION.has(p.en));
@@ -233,7 +248,7 @@ for (const code of countryShape.keys()) {
     const biggest = [...g].sort((a, b) => b.pop - a.pop)[0];
     const cap = g.some((p) => geoContains(p.geometry, CAPITALS[code]));
     regionMeta.set(id, {
-      code, name: biggest.name, area: Math.round(g.reduce((s, p) => s + p.area, 0)),
+      code, name: NAME_FIX[biggest.name] ?? biggest.name, area: Math.round(g.reduce((s, p) => s + p.area, 0)),
       pop: Math.round(g.reduce((s, p) => s + p.pop, 0)), cap,
     });
     for (const p of g) regionOf.set(p, id);
@@ -243,6 +258,46 @@ for (const code of countryShape.keys()) {
   if (!capProv) capProv = [...mine].sort((a, b) => dist(a.centroid, CAPITALS[code]) - dist(b.centroid, CAPITALS[code]))[0];
   for (const [id, m] of regionMeta) if (m.code === code) m.cap = id === regionOf.get(capProv);
   regionMeta.get(regionOf.get(capProv)).name = CAPITAL_NAMES[code];
+}
+
+// ---------- 3b. terrain ----------
+const ranges = rangesSrc.features
+  .filter((f) => f.properties.FEATURECLA === 'Range/mtn' && MOUNTAINS.has(f.properties.NAME))
+  .map((f) => ({ g: clip(f.geometry), w: RANGE_WEIGHT[f.properties.NAME] ?? 1 })).filter((r) => r.g)
+  .map((r) => ({ ...r, box: bbox(r.g) }));
+const overlaps = (a, b) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+const mountainArea = new Map();
+for (const p of provinces) {
+  let km2 = 0;
+  for (const r of ranges) {
+    if (!overlaps(p.box, r.box)) continue;
+    const cut = pc.intersection(p.geometry.coordinates, r.g.coordinates);
+    if (cut.length) km2 += r.w * geoArea({ type: 'MultiPolygon', coordinates: rewind(cut) }) * EARTH_KM2;
+  }
+  const id = regionOf.get(p);
+  mountainArea.set(id, (mountainArea.get(id) ?? 0) + Math.min(km2, p.area));
+}
+for (const [id, m] of regionMeta) { m.share = (mountainArea.get(id) ?? 0) / Math.max(1, m.area); m.mountain = m.share >= MOUNTAIN_SHARE; }
+if (process.env.MSHARE) console.log([...regionMeta.values()].filter((m) => m.share > 0.2).sort((a, b) => b.share - a.share).map((m) => m.code + ':' + m.name + ' ' + m.share.toFixed(2)).join(', '));
+
+// river lines, cut to the map and thinned for drawing
+const thin = (line, tol) => {
+  if (line.length < 3) return line;
+  const keep = [line[0]];
+  for (const pt of line.slice(1, -1)) if (dist(pt, keep[keep.length - 1]) >= tol) keep.push(pt);
+  keep.push(line[line.length - 1]);
+  return keep;
+};
+const riverLines = [];
+for (const f of riversSrc.features) {
+  const name = RIVERS[f.properties.name];
+  if (!name || !f.geometry) continue;
+  const lines = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.coordinates;
+  for (const l of lines) {
+    const inside = l.filter(([x, y]) => x > W && x < E && y > S && y < N);
+    if (inside.length < 2) continue;
+    riverLines.push({ name, line: thin(inside, 0.06).map(([x, y]) => [Math.round(x * 100) / 100, Math.round(y * 100) / 100]) });
+  }
 }
 
 // ---------- 4. merge into one topology and simplify ----------
@@ -256,7 +311,7 @@ const geoms = t1.objects.p.geometries;
 const merged = [];
 for (const [id, m] of regionMeta) {
   const geometry = merge(t1, geoms.filter((g) => g.properties.r === id));
-  merged.push({ type: 'Feature', id, properties: { c: m.code, n: m.name, a: m.area, pop: m.pop, ...(m.cap ? { cap: 1, p: CAPITALS[m.code] } : {}) }, geometry });
+  merged.push({ type: 'Feature', id, properties: { c: m.code, n: m.name, a: m.area, pop: m.pop, ...(m.mountain ? { m: 1 } : {}), ...(m.cap ? { cap: 1, p: CAPITALS[m.code] } : {}) }, geometry });
 }
 let xi = 0;
 for (const name of context.keys()) {
@@ -299,8 +354,51 @@ for (const g of topo.objects.land.geometries) {
   if (zones.length) g.properties.z = zones;
 }
 
-fs.mkdirSync('src/data', { recursive: true });
-fs.writeFileSync('src/data/europe.json', JSON.stringify(topo));
+// ---------- 6. river crossings ----------
+// Two neighbours are split by a river when the line between their centres crosses it.
+const regionGeoms = topo.objects.land.geometries.filter((g) => g.properties.c);
+const centreOf = new Map();
+for (const g of regionGeoms) {
+  const f = feature(topo, g);
+  const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+  const big = polys.reduce((a, q) => (geoArea({ type: 'Polygon', coordinates: q }) > geoArea({ type: 'Polygon', coordinates: a }) ? q : a));
+  centreOf.set(g.id, geoCentroid({ type: 'Polygon', coordinates: big }));
+}
+const arcOwners = new Map();
+for (const g of regionGeoms) for (const a of arcsOf(g)) { if (!arcOwners.has(a)) arcOwners.set(a, new Set()); arcOwners.get(a).add(g.id); }
+const landPairs = new Set();
+for (const owners of arcOwners.values()) {
+  const ids = [...owners].sort();
+  for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) landPairs.add(ids[i] + '|' + ids[j]);
+}
+const crosses = (p1, p2, q1, q2) => {
+  const d = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  return d(p1, p2, q1) * d(p1, p2, q2) < 0 && d(q1, q2, p1) * d(q1, q2, p2) < 0;
+};
+const riverBetween = (a, b) => {
+  for (const r of riverLines) for (let k = 1; k < r.line.length; k++) if (crosses(a, b, r.line[k - 1], r.line[k])) return r.name;
+  return null;
+};
+const byId = new Map(regionGeoms.map((g) => [g.id, g]));
+let crossings = 0;
+for (const key of landPairs) {
+  const [a, b] = key.split('|');
+  const river = riverBetween(centreOf.get(a), centreOf.get(b));
+  if (!river) continue;
+  crossings++;
+  for (const [x, y] of [[a, b], [b, a]]) {
+    const props = byId.get(x).properties;
+    props.rv = props.rv ?? {};
+    props.rv[y] = river;
+  }
+}
+topo.rivers = riverLines;
+
+fs.mkdirSync('public', { recursive: true });
+fs.writeFileSync('public/europe.json', JSON.stringify(topo));
+const mountainous = [...regionMeta.values()].filter((m) => m.mountain);
+console.log(`mountain regions ${mountainous.length}, river crossings ${crossings}, river lines ${riverLines.length}`);
+console.log('mountains: ' + mountainous.map((m) => m.code + ':' + m.name).join(', '));
 const perCountry = {};
 for (const m of regionMeta.values()) perCountry[m.code] = (perCountry[m.code] ?? 0) + 1;
 console.log(`regions ${regionMeta.size}, context ${context.size}, ${(JSON.stringify(topo).length / 1024).toFixed(0)} KB`);

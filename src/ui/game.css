@@ -207,3 +207,26 @@ details.more > * + * { margin-top: 10px; }
 .send-btns { display: flex; gap: 4px; }
 .send-btns .seg-btn { flex: 1; background: var(--surface-2); }
 .send-btns .seg-btn:hover { color: var(--text); }
+
+/* terrain and supply */
+.battle-note { display: flex; align-items: center; gap: 7px; font-size: 12.5px; margin-top: 4px; }
+.battle-note.bad { color: #ffb0a8; }
+.battle-note.good { color: #8fe3b0; }
+.terrain { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: 10px; background: rgba(79, 134, 209, .09); border: 1px solid rgba(79, 134, 209, .28); font-size: 12.5px; color: #b9d2f5; }
+.terrain span { display: flex; align-items: center; gap: 7px; }
+.supply { display: flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 6px 10px; border-radius: 9px; margin-top: 8px; }
+.supply.ok { color: #8fe3b0; background: rgba(111, 213, 154, .07); }
+.supply.low { color: #f0c75a; background: rgba(240, 199, 90, .09); }
+.supply.cut { color: #ffb0a8; background: rgba(240, 138, 128, .1); }
+
+/* permanent course */
+.course-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 18px 0 8px; padding-top: 14px; border-top: 1px solid var(--line-2); }
+.course-head h4 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 14px; color: var(--gold); }
+.courses { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.course { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 11px 11px 11px 46px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--bg); text-align: left; font-size: 12.5px; min-height: 70px; }
+.course b { font-size: 13.5px; }
+.course.locked { opacity: .45; cursor: not-allowed; }
+.course.open { cursor: pointer; }
+.course.open:hover { background: var(--surface-2); border-color: var(--gold); }
+.course.on { border-color: var(--gold); background: rgba(240, 185, 77, .1); }
+.course-tag { margin-top: 4px; font-size: 11px; font-weight: 800; color: var(--gold); text-transform: uppercase; letter-spacing: .06em; }

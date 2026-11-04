@@ -24,8 +24,7 @@
     "topojson-simplify": "^3.0.3",
     "tsx": "^4.23.15",
     "typescript": "~7.0.2",
-    "vite": "^8.3.5",
-    "world-atlas": "^2.0.2"
+    "vite": "^8.3.5"
   },
   "dependencies": {
     "d3-geo": "^3.1.1",

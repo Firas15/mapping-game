@@ -168,3 +168,27 @@ export function progressFocus(s: GameState, alive: (c: string) => boolean) {
     if (c === s.player) log(s, `Цель выполнена: ${x.name}`, 'good');
   }
 }
+
+// ---------- permanent course ----------
+// Once every goal is done the country picks a lasting course. It pays every
+// turn and can be changed at any time.
+
+export interface Course { id: string; name: string; text: string; icon: string }
+export const COURSES: Course[] = [
+  { id: 'order', name: 'Порядок', text: '+2 стабильности каждый ход', icon: 'smile' },
+  { id: 'growth', name: 'Экономический рост', text: '+10% к доходу', icon: 'coins' },
+  { id: 'levy', name: 'Резервисты', text: '+5 солдат в армию каждый ход', icon: 'users' },
+  { id: 'fort', name: 'Крепость', text: '+10% к обороне всех областей', icon: 'castle' },
+  { id: 'envoys', name: 'Посольства', text: '+2 влияния каждый ход', icon: 'handshake' },
+];
+export const COURSE: Record<string, Course> = Object.fromEntries(COURSES.map((x) => [x.id, x]));
+
+/** All goals finished: the course can be chosen. */
+export const coursesOpen = (s: GameState, c: string) => !s.focus[c].cur && available(s, c).length === 0;
+export const courseOf = (s: GameState, c: string) => (coursesOpen(s, c) ? s.focus[c].course ?? null : null);
+
+export function setCourse(s: GameState, c: string, id: string) {
+  if (!coursesOpen(s, c) || !COURSE[id]) return false;
+  s.focus[c].course = id;
+  return true;
+}

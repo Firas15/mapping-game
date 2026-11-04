@@ -7,11 +7,31 @@
     <meta name="theme-color" content="#0b1424" />
     <meta name="description" content="Mapping — пошаговая стратегия: выберите страну и объедините Европу." />
     <title>Mapping</title>
+    <!-- the map is the biggest file: start downloading it right away, next to the code -->
+    <link rel="preload" href="./europe.json" as="fetch" crossorigin />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;700;800&display=swap" rel="stylesheet" />
+    <style>
+      /* splash: shown before any script or stylesheet arrives */
+      #splash { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #0b1424; color: #e8eef7; font-family: Manrope, system-ui, sans-serif; transition: opacity .45s; }
+      #splash.gone { opacity: 0; pointer-events: none; }
+      .splash-in { width: min(320px, calc(100% - 48px)); text-align: center; }
+      .splash-logo { font: 800 34px/1 Unbounded, Manrope, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+      .splash-logo span { color: #f0b94d; }
+      .splash-track { margin: 22px auto 12px; height: 4px; border-radius: 4px; background: #182843; overflow: hidden; }
+      #splash-bar { display: block; height: 100%; background: #f0b94d; transform: scaleX(.04); transform-origin: left; transition: transform .2s; }
+      .splash-note { font-size: 13px; color: #8b9bb6; }
+    </style>
   </head>
-  <body data-mode="pick">
+  <body data-mode="menu">
+    <div id="splash" role="status" aria-live="polite">
+      <div class="splash-in">
+        <div class="splash-logo">Map<span>ping</span></div>
+        <div class="splash-track"><i id="splash-bar"></i></div>
+        <div class="splash-note">Загружаем карту Европы…</div>
+      </div>
+    </div>
     <header id="hud" class="hud"></header>
     <main id="stage">
       <div id="map-host"></div>
@@ -26,10 +46,12 @@
       <div id="journal"></div>
       <aside id="start" class="side start"></aside>
       <aside id="panel" class="side panel"></aside>
+      <div id="menu-screen" class="menu-screen"></div>
     </main>
     <footer id="decisions" class="decisions"></footer>
     <div id="toasts" aria-live="polite"></div>
     <div id="tutorial"></div>
+    <div id="howto" class="howto"></div>
     <div id="modal"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

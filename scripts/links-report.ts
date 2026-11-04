@@ -1,7 +1,7 @@
 // Lists sea crossings and regions nobody can reach. Run: npx tsx scripts/links-report.ts
 import { feature, neighbors } from 'topojson-client';
 import { geoArea, geoCentroid } from 'd3-geo';
-import europe from '../src/data/europe.json';
+import { europe } from '../src/data/map';
 import { REGION, REGIONS } from '../src/data/regions';
 import { buildGraph, land, sea, seaPairs } from '../src/game/graph';
 

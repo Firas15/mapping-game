@@ -3,13 +3,15 @@ import { CAPITAL, REGION, regionTitle } from '../data/regions';
 import { SEA } from '../data/seas';
 import { land, neighbours, sea } from './graph';
 import {
-  type GameState, type Unit, CAPITAL_BONUS, CAPITULATE_AFTER, HOME_BONUS, TRUCE_TURNS, addUnit, alive, armiesAt,
+  type GameState, type Unit, CAPITAL_BONUS, CAPITULATE_AFTER, DIFFICULTY, HOME_BONUS, TRUCE_TURNS, addUnit, alive, armiesAt,
   fx, integrated, isWinter, ownedBy, pairKey, playerRuling, unitsOf,
 } from './state';
 import { upg, upgSeaMaster } from './upgrades';
-import { changeRelation } from './diplomacy';
+import { changeRelation, relation } from './diplomacy';
 import { clamp, log } from './log';
 import { shiftParty } from './rules';
+import { affinity } from '../data/affinity';
+import { courseOf } from './focus';
 
 const name = (n: string) => COUNTRY[n].name;
 
@@ -42,6 +44,24 @@ function defendersOf(s: GameState, n: string) {
   return [...out].filter((m) => alive(s, m));
 }
 
+const touches = (s: GameState, a: string, b: string) =>
+  ownedBy(s, a).some((r) => [...(land.get(r) ?? [])].some((m) => s.owner[m] === b));
+
+/**
+ * When the player attacks, the victim's close friends nearby (EU and NATO
+ * partners, Russia and Belarus…) may stand up for it.
+ */
+export function possibleGuardians(s: GameState, victim: string) {
+  return COUNTRIES.map((c) => c.code).filter((m) => m !== s.player && m !== victim && alive(s, m)
+    && affinity(m, victim) >= 30 && relation(s, m) < 15 && !s.allies.includes(m)
+    && !atWar(s, m, s.player) && !inTruce(s, m, s.player)
+    && (touches(s, m, s.player) || touches(s, m, victim)));
+}
+function guardiansOf(s: GameState, victim: string) {
+  const odds = DIFFICULTY[s.settings.difficulty].guard;
+  return possibleGuardians(s, victim).filter(() => Math.random() < odds);
+}
+
 /** Why `a` can't declare war on `b` right now, or null. */
 export function cantDeclare(s: GameState, a: string, b: string): string | null {
   if (a === b || !alive(s, b)) return 'Нельзя';
@@ -69,7 +89,8 @@ export function declareWar(s: GameState, a: string, b: string): boolean {
 
   // the victim's bloc and allies join in
   const joined: string[] = [];
-  for (const m of defendersOf(s, b)) {
+  const side = new Set([...defendersOf(s, b), ...(a === s.player ? guardiansOf(s, b) : [])]);
+  for (const m of side) {
     if (m === a || atWar(s, m, a) || inTruce(s, m, a) || friends(s, m, a)) continue;
     s.wars.push({ a: m, b: a, since: s.turn, taken: {} });
     joined.push(m);
@@ -197,6 +218,98 @@ export function mergeAll(s: GameState) {
 // ---------- strength ----------
 
 /** Local defenders every region has even with no army in it. */
+// ---------- terrain ----------
+
+/** Defenders in the mountains fight this much better. */
+export const MOUNTAIN_BONUS = 0.3;
+/** Attacking across a big river: the attacker's strength is multiplied by this. */
+export const RIVER_MUL = 0.8;
+export const riverBetween = (from: string, to: string): string | undefined => REGION[from]?.rivers[to];
+
+// ---------- supply ----------
+// Armies are supplied from their country's own (or integrated) land and from
+// captured capitals. Each step further than SUPPLY_RANGE through land held by
+// the country or its friends costs strength; an army with no way back is cut off.
+
+const SUPPLY_RANGE = 2;
+/** Steps past the range at which supply counts as cut off. */
+const CUT_OFF = 4;
+const supplyCache = new WeakMap<GameState, Map<string, Map<string, number>>>();
+export const resetSupply = (s: GameState) => { supplyCache.delete(s); };
+
+function supplyDistances(s: GameState, n: string) {
+  let byNation = supplyCache.get(s);
+  if (!byNation) { byNation = new Map(); supplyCache.set(s, byNation); }
+  const hit = byNation.get(n);
+  if (hit) return hit;
+  const d = new Map<string, number>();
+  const queue: string[] = [];
+  for (const r of ownedBy(s, n)) {
+    if (integrated(s, r) || CAPITAL[REGION[r].c] === r) { d.set(r, 0); queue.push(r); }
+  }
+  const passable = (r: string) => s.owner[r] === n || friends(s, n, s.owner[r]);
+  for (let i = 0; i < queue.length; i++) {
+    const r = queue[i];
+    for (const x of neighbours(r)) {
+      if (d.has(x) || !passable(x)) continue;
+      d.set(x, d.get(r)! + 1);
+      queue.push(x);
+    }
+  }
+  byNation.set(n, d);
+  return d;
+}
+
+/** 0 = supplied; 1..CUT_OFF = how badly the army in `r` lacks supply. */
+export function supplyGap(s: GameState, n: string, r: string) {
+  const d = supplyDistances(s, n).get(r);
+  if (d === undefined) return CUT_OFF;
+  return Math.min(CUT_OFF, Math.max(0, d - SUPPLY_RANGE));
+}
+export const isCutOff = (s: GameState, n: string, r: string) => !supplyDistances(s, n).has(r);
+/** Fighting strength of an army without supply: −10% per step, at most −40%. */
+export const supplyMul = (s: GameState, n: string, r: string) => 1 - 0.1 * supplyGap(s, n, r);
+
+/** Unsupplied armies lose men every turn. Returns how many the player lost. */
+export function supplyAttrition(s: GameState) {
+  resetSupply(s);
+  let mine = 0;
+  for (const u of s.units) {
+    if (u.type !== 'army' || u.str <= 3) continue;
+    const gap = supplyGap(s, u.owner, u.at);
+    if (!gap) continue;
+    const loss = Math.max(1, Math.round(u.str * 0.04 * gap));
+    u.str -= loss;
+    if (u.owner === s.player) mine += loss;
+  }
+  return mine;
+}
+
+/** How an army stands with supply, for the unit panel. */
+export function supplyStatus(s: GameState, u: Unit): { level: 'ok' | 'low' | 'cut'; text: string } {
+  if (u.type !== 'army') return { level: 'ok', text: '' };
+  const gap = supplyGap(s, u.owner, u.at);
+  if (!gap) return { level: 'ok', text: 'Снабжение в норме' };
+  if (isCutOff(s, u.owner, u.at)) return { level: 'cut', text: `Окружена: сила −${gap * 10}%, каждый ход теряет ${gap * 4}% солдат` };
+  return { level: 'low', text: `Далеко от своих земель: сила −${gap * 10}%, каждый ход теряет ${gap * 4}% солдат` };
+}
+
+/** What changes the odds of an attack, in plain words. */
+export function battleNotes(s: GameState, u: Unit, to: string, join?: number[]) {
+  const notes: { text: string; good: boolean }[] = [];
+  if (REGION[to].mountain) notes.push({ text: `Горы: оборона +${Math.round(MOUNTAIN_BONUS * 100)}%`, good: false });
+  const group = attackers(s, u, to, join);
+  for (const r of new Set(group.map((x) => riverBetween(x.at, to)).filter(Boolean))) {
+    notes.push({ text: `Река ${r}: атака −${Math.round((1 - RIVER_MUL) * 100)}%`, good: false });
+  }
+  const worst = Math.max(...group.map((x) => supplyGap(s, x.owner, x.at)));
+  if (worst) notes.push({ text: `Мало снабжения: атака −${worst * 10}%`, good: false });
+  const enemy = s.owner[to];
+  const theirs = supplyGap(s, enemy, to);
+  if (theirs && armiesAt(s, to, enemy).length) notes.push({ text: `Враг без снабжения: оборона −${theirs * 10}%`, good: true });
+  return notes;
+}
+
 export function militia(s: GameState, r: string) {
   const o = s.owner[r];
   const reg = REGION[r];
@@ -214,7 +327,7 @@ export function defenseMul(s: GameState, r: string) {
   const e = fx(REGION[r].c);
   const home = o === REGION[r].c ? HOME_BONUS + (s.capital[o] === r ? CAPITAL_BONUS : 0) : 0;
   return 1 + (e.defenseMul ?? 0) + (isWinter(s.turn) ? e.winterDefenseMul ?? 0 : 0) + s.nb[o].defenseMul
-    + (o === s.player ? upg(s, 'defenseMul') : 0) + home;
+    + (o === s.player ? upg(s, 'defenseMul') + (courseOf(s, o) === 'fort' ? 0.1 : 0) : 0) + home + (REGION[r].mountain ? MOUNTAIN_BONUS : 0);
 }
 
 /** Friends' armies next to the battlefield chip in. */
@@ -240,7 +353,7 @@ export function supportOf(s: GameState, r: string) {
 
 export function defensePower(s: GameState, r: string) {
   const o = s.owner[r];
-  const local = armiesAt(s, r, o).reduce((sum, u) => sum + u.str, 0) + militia(s, r);
+  const local = armiesAt(s, r, o).reduce((sum, u) => sum + u.str, 0) * supplyMul(s, o, r) + militia(s, r);
   return Math.max(1, local * defenseMul(s, r) + supportOf(s, r) + helpOf(s, o, r));
 }
 
@@ -260,7 +373,10 @@ export function attackers(s: GameState, u: Unit, to: string, join?: number[]) {
 export function attackPower(s: GameState, u: Unit, to: string, join?: number[]) {
   const master = fx(u.owner).seaMaster || (u.owner === s.player && upgSeaMaster(s));
   const mul = attackMul(s, u.owner, to);
-  const own = attackers(s, u, to, join).reduce((sum, x) => sum + x.str * mul * (crossing(x.at, to)?.sea && !master ? 0.75 : 1), 0);
+  const own = attackers(s, u, to, join).reduce((sum, x) => sum + x.str * mul
+    * (crossing(x.at, to)?.sea && !master ? 0.75 : 1)
+    * (riverBetween(x.at, to) ? RIVER_MUL : 1)
+    * supplyMul(s, x.owner, x.at), 0);
   return own + helpOf(s, u.owner, to);
 }
 
@@ -300,6 +416,7 @@ export function transfer(s: GameState, r: string, to: string) {
   const w = warOf(s, prev, to);
   if (w && !(r in w.taken)) w.taken[r] = prev;
   s.owner[r] = to;
+  resetSupply(s);
   s.heldSince[r] = REGION[r].c === to ? 0 : s.turn;
   if (REGION[r].c === to) delete s.unrest[r];
   else s.unrest[r] = 15;

@@ -11,10 +11,11 @@ import {
 } from './state';
 import { clamp, log } from './log';
 import {
-  type BattleResult, type PeaceTerms, atWar, canAttackRegion, landBattle, mergeAll, transfer, updateCapitals, updateUnrest, warOf, yieldShare,
+  type BattleResult, type PeaceTerms, atWar, canAttackRegion, landBattle, mergeAll, resetSupply, supplyAttrition, transfer,
+  updateCapitals, updateUnrest, warOf, yieldShare,
 } from './war';
 import { armyTotal, draft, draftCap, reinforce, removeTroops, upkeepOf } from './units';
-import { progressFocus } from './focus';
+import { courseOf, progressFocus } from './focus';
 import { bordering, checkCoalition, updateBlocs } from './blocs';
 import { checkAchievements, rankOf, recordHistory } from './stats';
 
@@ -25,7 +26,8 @@ export { clamp, log };
 export const stabilityFactor = (s: GameState) => 0.5 + s.stability / 200;
 
 export function incomeMul(s: GameState) {
-  return 1 + (fx(s.player).incomeMul ?? 0) + s.nb[s.player].incomeMul + upg(s, 'incomeMul') + (playerRuling(s) === 'soc' ? 0.1 : 0);
+  return 1 + (fx(s.player).incomeMul ?? 0) + s.nb[s.player].incomeMul + upg(s, 'incomeMul') + (playerRuling(s) === 'soc' ? 0.1 : 0)
+    + (courseOf(s, s.player) === 'growth' ? 0.1 : 0);
 }
 
 /** Money a country's land brings before modifiers. Occupied land gives half until integrated. */
@@ -215,20 +217,25 @@ export function endTurn(s: GameState) {
 
   const e = fx(s.player);
   let stab = (e.stability ?? 0) + upg(s, 'stability') + s.nb[s.player].stability + (playerRuling(s) === 'con' ? 1 : 0);
+  if (courseOf(s, s.player) === 'order') stab += 2;
   if (s.stability < 50) stab += 1;
   else if (s.stability > 80) stab -= 1;
   // long wars tire a democracy
   if (playerRuling(s) === 'dem' && s.wars.some((w) => w.a === s.player || w.b === s.player)) stab -= 1;
   s.stability = clamp(s.stability + stab, 0, 100);
-  s.influence = Math.max(0, s.influence + influenceGain(s));
+  s.influence = Math.max(0, s.influence + influenceGain(s) + (courseOf(s, s.player) === 'envoys' ? 2 : 0));
+  if (courseOf(s, s.player) === 'levy') reinforce(s, s.player, 5);
 
   for (const x of COUNTRIES) shiftParty(s.parties[x.code], PARTY_ORDER[Math.floor(Math.random() * 4)], Math.random() * 2);
   if (s.stability < 35) shiftParty(s.parties[s.player], Math.random() < 0.5 ? 'nat' : 'soc', 2);
 
   s.turn++;
   for (const u of s.units) u.acted = false;
+  resetSupply(s);
   aiTurn(s);
   mergeAll(s);
+  const starved = supplyAttrition(s);
+  if (starved) log(s, `Без снабжения армии потеряли ${starved} солдат`, 'bad');
   updateUnrest(s);
   updateCapitals(s);
   if (!s.lost && owned(s).length === 0) {
