@@ -1,6 +1,7 @@
 import { COUNTRIES, COUNTRY, type PartyId, PARTY_ORDER } from '../data/countries';
 import { TRAITS, type TraitEffect } from '../data/traits';
 import { CAPITAL, REGION, REGIONS, regionsOf } from '../data/regions';
+import { affinity } from '../data/affinity';
 
 export type Parties = [number, number, number, number];
 
@@ -69,6 +70,8 @@ export interface Stats {
   battlesWon: number; battlesLost: number; regionsTaken: number; regionsLost: number;
   capitalsTaken: number; annexed: number; peaces: number; fleetsSunk: number; airStrikes: number;
   maxRegions: number; capitalRetaken: number;
+  /** turn the player last lost a region */
+  lastLoss?: number;
 }
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
@@ -84,7 +87,7 @@ export type Tone = 'good' | 'bad' | 'info';
 export interface LogEntry { turn: number; text: string; tone: Tone }
 
 export interface GameState {
-  version: 4;
+  version: 5;
   settings: Settings;
   player: string;
   turn: number;
@@ -169,7 +172,7 @@ export function newGame(player: string, hand: string[], settings: Settings = { d
   for (const r of REGIONS) { owner[r.id] = r.c; heldSince[r.id] = 0; }
 
   const s: GameState = {
-    version: 4, settings, player, turn: 1, owner, heldSince, unrest: {},
+    version: 5, settings, player, turn: 1, owner, heldSince, unrest: {},
     capital: { ...CAPITAL }, keyless: {}, units: [], nextUnit: 1, ai: {}, nb: {},
     money: Math.round(Math.max(150, def.eco * 3) * DIFFICULTY[settings.difficulty].playerMoney),
     stability: 70, influence: 10, parties: {}, ruling: {}, nextElection: ELECTION_EVERY + 1,
@@ -178,7 +181,7 @@ export function newGame(player: string, hand: string[], settings: Settings = { d
     coalitionFormed: false, peaceOffer: null, notice: null, history: [],
     stats: {
       battlesWon: 0, battlesLost: 0, regionsTaken: 0, regionsLost: 0, capitalsTaken: 0, annexed: 0, peaces: 0,
-      fleetsSunk: 0, airStrikes: 0, maxRegions: regionsOf(player).length, capitalRetaken: 0,
+      fleetsSunk: 0, airStrikes: 0, maxRegions: regionsOf(player).length, capitalRetaken: 0, lastLoss: 1,
     },
     achievements: [], fresh: [], won: false, lost: false, endReason: '',
   };
@@ -192,7 +195,7 @@ export function newGame(player: string, hand: string[], settings: Settings = { d
     placeStartingForces(s, x.code);
   }
   for (const x of COUNTRIES) {
-    if (x.code !== player) s.relations[x.code] = s.ruling[x.code] === s.ruling[player] ? 20 : 0;
+    if (x.code !== player) s.relations[x.code] = Math.max(-100, Math.min(100, affinity(player, x.code) + (s.ruling[x.code] === s.ruling[player] ? 10 : 0)));
   }
   return s;
 }
@@ -234,7 +237,7 @@ export const armiesAt = (s: GameState, region: string, owner?: string) =>
 export const integrated = (s: GameState, region: string) =>
   s.owner[region] === REGION[region].c || s.turn - (s.heldSince[region] ?? 0) >= INTEGRATE_AFTER;
 
-const SAVE_KEY = 'mapping-save-v4';
+const SAVE_KEY = 'mapping-save-v5';
 export function save(s: GameState) {
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch { /* storage may be blocked */ }
 }
@@ -242,7 +245,7 @@ export function load(): GameState | null {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     const s = raw ? (JSON.parse(raw) as GameState) : null;
-    if (!s || s.version !== 4 || !COUNTRY[s.player] || s.lost || s.won) return null;
+    if (!s || s.version !== 5 || !COUNTRY[s.player] || s.lost || s.won) return null;
     return s;
   } catch {
     return null;

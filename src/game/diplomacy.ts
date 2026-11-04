@@ -1,6 +1,7 @@
 import { COUNTRIES, COUNTRY } from '../data/countries';
 import { type GameState, alive } from './state';
 import { log } from './log';
+import { affinity } from '../data/affinity';
 import { atWar } from './war';
 
 export const ALLY_MIN = 50;
@@ -68,9 +69,10 @@ export function driftRelations(s: GameState) {
   for (const c of COUNTRIES) {
     const n = c.code;
     if (n === s.player || !alive(s, n) || isAlly(s, n)) continue;
+    // relations slowly settle back to how the two countries usually get along
     const r = relation(s, n);
-    if (s.ruling[n] === s.ruling[s.player] && r < 40) changeRelation(s, n, 1);
-    else if (r > 0) changeRelation(s, n, -1);
-    else if (r < 0) changeRelation(s, n, 1);
+    const base = Math.max(-60, Math.min(60, affinity(s.player, n) + (s.ruling[n] === s.ruling[s.player] ? 10 : 0)));
+    if (r < base) changeRelation(s, n, 1);
+    else if (r > base) changeRelation(s, n, -1);
   }
 }

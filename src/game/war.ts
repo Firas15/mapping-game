@@ -304,7 +304,7 @@ export function transfer(s: GameState, r: string, to: string) {
   if (REGION[r].c === to) delete s.unrest[r];
   else s.unrest[r] = 15;
   if (to === s.player) s.stats.regionsTaken++;
-  if (prev === s.player) s.stats.regionsLost++;
+  if (prev === s.player) { s.stats.regionsLost++; s.stats.lastLoss = s.turn; }
   // air wings based there fly home
   for (const u of s.units.filter((x) => x.type === 'air' && x.at === r && x.owner === prev)) {
     const home = s.capital[prev] && s.owner[s.capital[prev]!] === prev ? s.capital[prev]! : ownedBy(s, prev)[0];

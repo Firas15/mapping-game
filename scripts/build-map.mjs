@@ -21,6 +21,8 @@ const world = require('world-atlas/countries-50m.json');
 
 const ADMIN1_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson';
 const ADMIN1_FILE = '.cache/ne_10m_admin_1.geojson';
+const PLACES_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_populated_places_simple.geojson';
+const PLACES_FILE = '.cache/ne_10m_places.geojson';
 // Share of border detail kept after simplification (smaller = lighter file).
 const KEEP = Number(process.env.KEEP ?? 0.09);
 
@@ -39,9 +41,9 @@ const PLAYABLE = {
 
 // How many regions each country gets. Missing = 1.
 const REGION_COUNT = {
-  RU: 8, DE: 6, FR: 7, GB: 5, IT: 6, ES: 6, TR: 6, PL: 5, UA: 6, SE: 4, NO: 4, FI: 4, RO: 4,
-  BY: 3, GR: 3, BG: 3, HU: 3, AT: 3, CZ: 3, PT: 3, RS: 3, IE: 2, DK: 2, NL: 2, BE: 2, CH: 2,
-  IS: 2, BA: 2, HR: 2, SK: 2, LT: 2, LV: 2, EE: 2, AL: 2, MK: 2, MD: 2,
+  RU: 14, DE: 10, FR: 12, GB: 9, IT: 10, ES: 10, TR: 10, PL: 8, UA: 10, SE: 7, NO: 6, FI: 6, RO: 7,
+  BY: 5, GR: 5, BG: 4, HU: 4, AT: 4, CZ: 4, PT: 4, RS: 4, IE: 3, DK: 3, NL: 3, BE: 3, CH: 3,
+  IS: 2, BA: 3, HR: 3, SK: 3, LT: 3, LV: 3, EE: 2, AL: 2, MK: 2, MD: 2, SI: 2, ME: 2, XK: 2,
 };
 
 // Capital cities, lon/lat. The region holding one is that country's capital region.
@@ -112,14 +114,18 @@ for (const f of feature(world, world.objects.countries).features) {
 
 // ---------- 2. provinces ----------
 
-if (!fs.existsSync(ADMIN1_FILE)) {
-  console.log('downloading provinces…');
-  fs.mkdirSync('.cache', { recursive: true });
-  const res = await fetch(ADMIN1_URL);
-  if (!res.ok) throw new Error('download failed: ' + res.status);
-  fs.writeFileSync(ADMIN1_FILE, Buffer.from(await res.arrayBuffer()));
+async function cached(url, file) {
+  if (!fs.existsSync(file)) {
+    console.log('downloading ' + file + '…');
+    fs.mkdirSync('.cache', { recursive: true });
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('download failed: ' + res.status);
+    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  }
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
-const admin1 = JSON.parse(fs.readFileSync(ADMIN1_FILE, 'utf8'));
+const admin1 = await cached(ADMIN1_URL, ADMIN1_FILE);
+const places = await cached(PLACES_URL, PLACES_FILE);
 
 const provinces = []; // playable
 const context = new Map(); // admin name -> geometries
@@ -141,6 +147,24 @@ for (const f of admin1.features) {
     if (!context.has(key)) context.set(key, []);
     context.get(key).push(g);
   }
+}
+
+// ---------- 2b. population ----------
+// Towns over 15 000 people count in full; the countryside adds a little per km².
+const bbox = (g) => {
+  let x0 = 180, y0 = 90, x1 = -180, y1 = -90;
+  for (const poly of g.coordinates) for (const [x, y] of poly[0]) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  return [x0, y0, x1, y1];
+};
+for (const p of provinces) { p.box = bbox(p.geometry); p.pop = p.area * 0.004; }
+for (const f of places.features) {
+  const q = f.properties;
+  const pop = q.pop_max ?? 0;
+  if (pop < 15000) continue;
+  const pt = [q.longitude, q.latitude];
+  if (pt[0] < W || pt[0] > E || pt[1] < S || pt[1] > N) continue;
+  const home = provinces.find((p) => pt[0] >= p.box[0] && pt[0] <= p.box[2] && pt[1] >= p.box[1] && pt[1] <= p.box[3] && geoContains(p.geometry, pt));
+  if (home) home.pop += pop / 1000;
 }
 
 // ---------- 3. group provinces into regions ----------
@@ -206,9 +230,12 @@ for (const code of countryShape.keys()) {
 
   groups.filter((g) => g.length).forEach((g, i) => {
     const id = `${code}-${i + 1}`;
-    const biggest = [...g].sort((a, b) => b.area - a.area)[0];
+    const biggest = [...g].sort((a, b) => b.pop - a.pop)[0];
     const cap = g.some((p) => geoContains(p.geometry, CAPITALS[code]));
-    regionMeta.set(id, { code, name: biggest.name, area: Math.round(g.reduce((s, p) => s + p.area, 0)), cap });
+    regionMeta.set(id, {
+      code, name: biggest.name, area: Math.round(g.reduce((s, p) => s + p.area, 0)),
+      pop: Math.round(g.reduce((s, p) => s + p.pop, 0)), cap,
+    });
     for (const p of g) regionOf.set(p, id);
   });
   // the capital region takes its name from the province the capital is in
@@ -229,7 +256,7 @@ const geoms = t1.objects.p.geometries;
 const merged = [];
 for (const [id, m] of regionMeta) {
   const geometry = merge(t1, geoms.filter((g) => g.properties.r === id));
-  merged.push({ type: 'Feature', id, properties: { c: m.code, n: m.name, a: m.area, ...(m.cap ? { cap: 1, p: CAPITALS[m.code] } : {}) }, geometry });
+  merged.push({ type: 'Feature', id, properties: { c: m.code, n: m.name, a: m.area, pop: m.pop, ...(m.cap ? { cap: 1, p: CAPITALS[m.code] } : {}) }, geometry });
 }
 let xi = 0;
 for (const name of context.keys()) {

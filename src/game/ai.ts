@@ -15,6 +15,7 @@ import { incomeOf, warScore } from './rules';
 import { isAlly, relation } from './diplomacy';
 import { power } from './blocs';
 import { clamp, log } from './log';
+import { affinity } from '../data/affinity';
 
 /** How eager a government is to start a war, per turn. */
 const AGGRESSION = { nat: 0.3, con: 0.16, soc: 0.12, dem: 0.06 } as const;
@@ -132,7 +133,10 @@ function maybeDeclare(s: GameState, n: string) {
   const mine = power(s, n) + 1;
   for (const o of neighbourOwners) {
     if (cantDeclare(s, n, o)) continue;
-    let need: number = NEED[ruling];
+    const aff = affinity(n, o);
+    // close friends don't fight; old rivals need less of a reason
+    if (aff >= 45) continue;
+    let need: number = NEED[ruling] * clamp(1 + aff / 120, 0.7, 1.4);
     if (o === s.player) {
       if (s.turn < PLAYER_SAFE_UNTIL || isAlly(s, n) || relation(s, n) >= 40) continue;
       // a sprawling player looks like a threat worth stopping
@@ -142,7 +146,7 @@ function maybeDeclare(s: GameState, n: string) {
     }
     const ratio = mine / (backedPower(s, o) + 1);
     if (ratio < need) continue;
-    const score = ratio + ownedBy(s, o).reduce((sum, r) => sum + REGION[r].eco, 0) / 200;
+    const score = ratio + ownedBy(s, o).reduce((sum, r) => sum + REGION[r].eco, 0) / 200 - aff / 60;
     if (score > bestScore) { bestScore = score; best = o; }
   }
   if (best) declareWar(s, n, best);
@@ -172,16 +176,89 @@ function stepToward(s: GameState, n: string, from: string, goal: string): string
   return step;
 }
 
+/** Steps from every region to the country's own home land (cores it still holds). */
+function homeDistance(s: GameState, n: string) {
+  const out = new Map<string, number>();
+  let frontierSet = ownedBy(s, n).filter((r) => REGION[r].c === n);
+  if (!frontierSet.length) frontierSet = ownedBy(s, n);
+  for (const r of frontierSet) out.set(r, 0);
+  for (let d = 1; d <= 6 && frontierSet.length; d++) {
+    const next: string[] = [];
+    for (const r of frontierSet) for (const m of neighbours(r)) if (!out.has(m)) { out.set(m, d); next.push(m); }
+    frontierSet = next;
+  }
+  return out;
+}
+
+/** How likely the enemy is to take each of our regions next turn, and how much it matters. */
+function dangerMap(s: GameState, n: string, enemies: Set<string>) {
+  const out: { r: string; danger: number; weight: number }[] = [];
+  for (const r of ownedBy(s, n)) {
+    let danger = 0;
+    for (const m of neighbours(r)) {
+      for (const e of armiesAt(s, m)) {
+        if (!enemies.has(e.owner)) continue;
+        if (e.owner === s.player && s.turn < PLAYER_SAFE_UNTIL) continue;
+        danger = Math.max(danger, chance(s, e, r));
+      }
+    }
+    if (!danger) continue;
+    const reg = REGION[r];
+    const weight = (s.capital[n] === r ? 3 : 1) * (reg.c === n ? 1.6 : 1) * (1 + reg.eco / 30 + reg.men / 4);
+    out.push({ r, danger, weight });
+  }
+  return out.sort((a, b) => b.danger * b.weight - a.danger * a.weight);
+}
+
+/** Within this many steps the army can reach a region over own land. */
+function stepsTo(s: GameState, n: string, from: string, goal: string, limit = 4): number {
+  if (from === goal) return 0;
+  const seen = new Set([from]);
+  let wave = [from];
+  for (let d = 1; d <= limit; d++) {
+    const next: string[] = [];
+    for (const r of wave) for (const m of neighbours(r)) {
+      if (seen.has(m) || s.owner[m] !== n) continue;
+      if (m === goal) return d;
+      seen.add(m);
+      next.push(m);
+    }
+    wave = next;
+  }
+  return Infinity;
+}
+
 function actArmies(s: GameState, n: string) {
   const ruling = s.ruling[n];
   const enemies = new Set(enemiesOf(s, n));
-  const front = frontier(s, n);
-  const assigned = new Map<string, number>();
+  const busy = new Set<number>();
+  const armies = () => unitsOf(s, n, 'army').filter((u) => !u.acted && !busy.has(u.id) && s.units.includes(u));
 
-  for (const u of unitsOf(s, n, 'army').sort((a, b) => b.str - a.str)) {
-    if (u.acted || !s.units.includes(u)) continue;
-    // attack the juiciest enemy region we can probably take
-    if (enemies.size) {
+  // 1. defence first: cover our regions the enemy could take, home land and the capital above all
+  if (enemies.size) {
+    for (const d of dangerMap(s, n, enemies)) {
+      if (d.danger < 45) continue;
+      const here = armiesAt(s, d.r, n);
+      // whoever already stands there holds the line
+      for (const u of here) busy.add(u.id);
+      if (here.length && d.danger < 65) continue;
+      // bring the closest free army one step nearer
+      const helper = armies()
+        .map((u) => ({ u, steps: stepsTo(s, n, u.at, d.r) }))
+        .filter((x) => x.steps <= 3)
+        .sort((a, b) => a.steps - b.steps || b.u.str - a.u.str)[0];
+      if (!helper) continue;
+      busy.add(helper.u.id);
+      const step = stepToward(s, n, helper.u.at, d.r);
+      if (step && crossing(helper.u.at, step)) { helper.u.at = step; helper.u.acted = true; }
+    }
+  }
+
+  // 2. free armies attack, preferring targets close to home over deep raids
+  const home = homeDistance(s, n);
+  if (enemies.size) {
+    for (const u of armies().sort((a, b) => b.str - a.str)) {
+      if (u.acted || !s.units.includes(u)) continue;
       let best: string | null = null;
       let bestScore = -Infinity;
       for (const r of neighbours(u.at)) {
@@ -191,28 +268,32 @@ function actArmies(s: GameState, n: string) {
         const ch = chance(s, u, r);
         if (ch < NERVE[ruling]) continue;
         const reg = REGION[r];
-        const score = ch + reg.eco * 0.5 + reg.men * 3 + (s.capital[o] === r ? 25 : 0) + (reg.c === n ? 25 : 0) + Math.random() * 8;
+        const far = Math.max(0, (home.get(r) ?? 6) - 2);
+        const score = ch + reg.eco * 0.5 + reg.men * 3 + (s.capital[o] === r ? 25 : 0) + (reg.c === n ? 30 : 0)
+          - far * 18 + Math.random() * 8;
         if (score > bestScore) { bestScore = score; best = r; }
       }
-      // don't strip a threatened region bare unless the prize is good
-      const hereNeed = front.find((x) => x.r === u.at)?.need ?? 0;
-      if (best && (hereNeed < u.str * 0.6 || bestScore > 85)) {
-        const defender = s.owner[best];
-        const res = landBattle(s, u, best);
-        s.events.push({ attacker: n, defender, target: best, won: res.won, eliminated: res.eliminated });
-        if (defender === s.player) {
-          if (res.won) log(s, `${COUNTRY[n].name} взяла ${regionTitle(best)}`, 'bad');
-          else log(s, `Отбили атаку: ${regionTitle(best)}`, 'good');
-        }
-        if (res.eliminated) log(s, `${COUNTRY[defender].name} больше не существует`, defender === s.player ? 'bad' : 'info');
-        continue;
+      if (!best || bestScore < 40) continue;
+      const defender = s.owner[best];
+      const res = landBattle(s, u, best);
+      s.events.push({ attacker: n, defender, target: best, won: res.won, eliminated: res.eliminated });
+      if (defender === s.player) {
+        if (res.won) log(s, `${COUNTRY[n].name} взяла ${regionTitle(best)}`, 'bad');
+        else log(s, `Отбили атаку: ${regionTitle(best)}`, 'good');
       }
+      if (res.eliminated) log(s, `${COUNTRY[defender].name} больше не существует`, defender === s.player ? 'bad' : 'info');
     }
-    // otherwise walk to where the danger is
+  }
+
+  // 3. the rest walk to the front, the part of it nearest home first
+  const front = frontier(s, n);
+  const assigned = new Map<string, number>();
+  for (const u of armies().sort((a, b) => b.str - a.str)) {
     const target = front
-      .map((x) => ({ ...x, left: x.need - (assigned.get(x.r) ?? 0) }))
-      .sort((a, b) => Number(b.enemyLand) - Number(a.enemyLand) || b.left - a.left)[0];
-    if (!target || target.left <= 0 || target.r === u.at) {
+      .map((x) => ({ ...x, left: x.need - (assigned.get(x.r) ?? 0), far: home.get(x.r) ?? 6 }))
+      .sort((a, b) => Number(b.enemyLand) - Number(a.enemyLand) || a.far - b.far || b.left - a.left)
+      .find((x) => x.left > 0);
+    if (!target || target.r === u.at) {
       assigned.set(u.at, (assigned.get(u.at) ?? 0) + u.str);
       continue;
     }

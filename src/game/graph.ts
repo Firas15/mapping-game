@@ -53,6 +53,58 @@ export function buildGraph(pairs: [string, string][], centroid: (id: string) => 
     linkSea(a, b, zone);
     seaPairs.push({ a, b, zone });
   }
+  autoCrossings(centroid);
+}
+
+/** Crossings between close shores of one sea, so islands and straits can be landed on. */
+const NEAR = 3.4;
+const MAX_AUTO = 4;
+function autoCrossings(centroid: (id: string) => [number, number]) {
+  const coastal = REGIONS.filter((r) => r.coast.length);
+  const added = new Map<string, number>();
+  const tryLink = (a: string, b: string, zone: string) => {
+    if (a === b || land.get(a)?.has(b) || sea.get(a)?.has(b)) return false;
+    linkSea(a, b, zone);
+    seaPairs.push({ a, b, zone });
+    added.set(a, (added.get(a) ?? 0) + 1);
+    added.set(b, (added.get(b) ?? 0) + 1);
+    return true;
+  };
+  // every pair of close shores facing the same sea
+  const pairs: { a: string; b: string; zone: string; d: number }[] = [];
+  for (let i = 0; i < coastal.length; i++) {
+    for (let j = i + 1; j < coastal.length; j++) {
+      const ra = coastal[i];
+      const rb = coastal[j];
+      const zone = ra.coast.find((z) => rb.coast.includes(z));
+      if (!zone) continue;
+      const d = dist(centroid(ra.id), centroid(rb.id));
+      pairs.push({ a: ra.id, b: rb.id, zone, d });
+    }
+  }
+  pairs.sort((x, y) => x.d - y.d);
+  for (const p of pairs) {
+    if (p.d > NEAR) break;
+    if ((added.get(p.a) ?? 0) >= MAX_AUTO || (added.get(p.b) ?? 0) >= MAX_AUTO) continue;
+    tryLink(p.a, p.b, p.zone);
+  }
+  // islands and exclaves cut off from their own country get a crossing to its nearest shore
+  for (const r of coastal) {
+    if ([...(land.get(r.id) ?? [])].some((n) => REGION[n].c === r.c)) continue;
+    if ([...(sea.get(r.id)?.keys() ?? [])].some((n) => REGION[n].c === r.c)) continue;
+    const here = centroid(r.id);
+    const mates = coastal.filter((x) => x.c === r.c && x.id !== r.id)
+      .sort((x, y) => dist(centroid(x.id), here) - dist(centroid(y.id), here));
+    if (!mates.length) continue;
+    const zone = r.coast.find((z) => mates[0].coast.includes(z)) ?? r.coast[0];
+    tryLink(r.id, mates[0].id, zone);
+  }
+  // an island with no way in or out gets its nearest shore, however far
+  for (const r of coastal) {
+    if ((land.get(r.id)?.size ?? 0) > 0 || (sea.get(r.id)?.size ?? 0) > 0) continue;
+    const near = pairs.filter((p) => p.a === r.id || p.b === r.id).slice(0, 2);
+    for (const p of near) tryLink(p.a, p.b, p.zone);
+  }
 }
 
 /** All regions one step away, by land or by sea. */

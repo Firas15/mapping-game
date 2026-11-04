@@ -52,8 +52,8 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: 'sea', name: 'Владыка морей', text: 'Потопить 5 флотов', icon: 'dove', check: (s) => s.stats.fleetsSunk >= 5 },
   { id: 'sky', name: 'Небо наше', text: 'Нанести 20 авиаударов', icon: 'target', check: (s) => s.stats.airStrikes >= 20 },
   { id: 'phoenix', name: 'Феникс', text: 'Вернуть потерянную столицу', icon: 'restart', check: (s) => s.stats.capitalRetaken > 0 },
-  { id: 'third', name: 'Треть Европы', text: 'Владеть 44 областями', icon: 'flag', check: (s) => ownedBy(s, s.player).length >= 44 },
-  { id: 'iron', name: 'Несокрушимый', text: 'Победить, не потеряв ни одной области', icon: 'shield', check: (s) => s.won && s.stats.regionsLost === 0 },
+  { id: 'third', name: 'Треть Европы', text: `Владеть ${Math.ceil(REGIONS.length / 3)} областями`, icon: 'flag', check: (s) => ownedBy(s, s.player).length >= Math.ceil(REGIONS.length / 3) },
+  { id: 'iron', name: 'Несокрушимый', text: '30 ходов подряд не терять ни одной своей области', icon: 'shield', check: (s) => s.turn - (s.stats.lastLoss ?? 1) >= 30 },
   { id: 'unify', name: 'Объединитель', text: 'Объединить всю Европу', icon: 'trophy', check: (s) => ownedBy(s, s.player).length === REGIONS.length },
 ];
 

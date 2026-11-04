@@ -5,6 +5,7 @@ import { land } from './graph';
 import { atWar, blocOf, declareWar, friends, inTruce } from './war';
 import { relation } from './diplomacy';
 import { log } from './log';
+import { affinity } from '../data/affinity';
 
 const BLOC_NAMES: Record<PartyId, string> = {
   dem: 'Демократический союз',
@@ -38,7 +39,10 @@ export function updateBlocs(s: GameState) {
     const party = s.ruling[leader];
     const members = [leader];
     for (const n of free) {
-      if (members.length >= 5 || members.includes(n) || s.ruling[n] !== party) continue;
+      if (members.length >= 5 || members.includes(n)) continue;
+      // like-minded governments on good terms, or close friends whatever their politics
+      const aff = Math.min(...members.map((m) => affinity(m, n)));
+      if (!((s.ruling[n] === party && aff >= 0) || aff >= 45)) continue;
       if (members.some((m) => atWar(s, m, n))) continue;
       if (!members.some((m) => bordering(s, m, n))) continue;
       members.push(n);

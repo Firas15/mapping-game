@@ -19,6 +19,8 @@ export interface RegionDef {
   eco: number;
   /** soldiers per turn */
   men: number;
+  /** people, thousands */
+  pop: number;
   /** sea zones it touches; empty for inland regions */
   coast: string[];
 }
@@ -41,11 +43,7 @@ const MEN_WEIGHT: Record<RegionKind, number> = { industry: 0, hub: 0.6, manpower
 /** Soldiers a whole country raises per turn, as a share of its starting army. */
 const MEN_SHARE = 0.07;
 
-/** Small stable hash so a region keeps its kind from game to game. */
-const hash = (s: string) => [...s].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7);
-const CYCLE: RegionKind[] = ['industry', 'hub', 'industry', 'manpower', 'industry'];
-
-interface Props { c?: string; n?: string; a?: number; cap?: number; p?: [number, number]; z?: string[] }
+interface Props { c?: string; n?: string; a?: number; pop?: number; cap?: number; p?: [number, number]; z?: string[] }
 
 const topo = europe as unknown as Topology<{ land: GeometryCollection<Props> }>;
 const raw = (feature(topo, topo.objects.land) as unknown as { features: { id: string; properties: Props }[] }).features
@@ -60,19 +58,28 @@ for (const f of raw) {
 }
 
 for (const [c, list] of byCountry) {
-  // Kinds: the capital is a hub, the biggest other region raises soldiers,
-  // the rest follow a mix that differs from country to country.
+  // Kinds follow where people live: the capital and the most populous regions are
+  // hubs, dense regions are industrial, thinly peopled ones send soldiers.
+  const pop = (f: (typeof list)[number]) => Math.max(1, f.properties.pop ?? 1);
+  const density = (f: (typeof list)[number]) => pop(f) / Math.max(1, f.properties.a ?? 1);
   const kinds = new Map<string, RegionKind>();
-  const others = list.filter((f) => !f.properties.cap).sort((a, b) => (b.properties.a ?? 0) - (a.properties.a ?? 0));
-  const shift = hash(c) % CYCLE.length;
-  others.forEach((f, i) => kinds.set(f.id, i === 0 ? 'manpower' : CYCLE[(i - 1 + shift) % CYCLE.length]));
+  const others = list.filter((f) => !f.properties.cap).sort((a, b) => pop(b) - pop(a));
+  const hubs = Math.floor(others.length / 4);
+  const dens = others.slice(hubs).map(density).sort((a, b) => a - b);
+  const median = dens[Math.floor(dens.length / 2)] ?? 0;
+  others.forEach((f, i) => kinds.set(f.id, i < hubs ? 'hub' : density(f) >= median ? 'industry' : 'manpower'));
   for (const f of list) if (f.properties.cap) kinds.set(f.id, 'hub');
+  // bigger countries always get at least one of each
+  if (others.length >= 2) {
+    const rest = others.slice(hubs);
+    if (!rest.some((f) => kinds.get(f.id) === 'manpower') && rest.length) kinds.set([...rest].sort((a, b) => density(a) - density(b))[0].id, 'manpower');
+    if (!rest.some((f) => kinds.get(f.id) === 'industry') && rest.length > 1) kinds.set([...rest].sort((a, b) => density(b) - density(a))[0].id, 'industry');
+  }
 
-  // Money and soldiers are split by size (half) and evenly (half), weighted by kind;
-  // the capital counts double. Country totals stay the same as before.
-  const total = list.reduce((s, f) => s + (f.properties.a ?? 0), 0) || 1;
-  const size = (f: (typeof list)[number]) =>
-    (0.5 * (f.properties.a ?? 0) / total + 0.5 / list.length) * (f.properties.cap ? 2 : 1);
+  // Money and soldiers are split mostly by population, a little evenly, weighted by kind.
+  // Country totals stay as set in countries.ts.
+  const total = list.reduce((s, f) => s + pop(f), 0) || 1;
+  const size = (f: (typeof list)[number]) => (0.75 * pop(f) / total + 0.25 / list.length) * (f.properties.cap ? 1.3 : 1);
   const split = (amount: number, w: Record<RegionKind, number>, min: number) => {
     const weights = list.map((f) => size(f) * w[kinds.get(f.id)!]);
     const sum = weights.reduce((a, b) => a + b, 0) || 1;
@@ -84,6 +91,7 @@ for (const [c, list] of byCountry) {
     REGIONS.push({
       id: f.id, c, name: f.properties.n ?? COUNTRY[c].name, area: f.properties.a ?? 0,
       capital: !!f.properties.cap, point: f.properties.p, kind: kinds.get(f.id)!, eco: eco[i], men: men[i],
+      pop: f.properties.pop ?? 0,
       coast: f.properties.z ?? [],
     });
   });
