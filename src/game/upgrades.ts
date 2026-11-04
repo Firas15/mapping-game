@@ -9,7 +9,11 @@ export interface UpgradeEffect {
   stability?: number;
   /** multiplier on peaceful annexation cost */
   annexMul?: number;
-  extraAttacks?: number;
+  extraArmies?: number;
+  fleetMul?: number;
+  airMul?: number;
+  /** share of air damage stopped */
+  aa?: number;
   seaMaster?: boolean;
 }
 
@@ -38,12 +42,12 @@ export const UPGRADES: Upgrade[] = [
   { id: 'conveyor', branch: 'eco', name: 'Конвейер', text: 'Войска на 20% дешевле', cost: 450, icon: 'coins', requires: 'rail', effect: { armyCostMul: -0.2 } },
 
   { id: 'tanks', branch: 'army', name: 'Танки', text: '+15% к атаке', cost: 280, icon: 'swords', effect: { attackMul: 0.15 } },
-  { id: 'air', branch: 'army', name: 'Авиация', text: '+15% к атаке', cost: 520, icon: 'target', requires: 'tanks', effect: { attackMul: 0.15 } },
-  { id: 'hq', branch: 'army', name: 'Генштаб', text: '+1 атака за ход', cost: 650, icon: 'flag', requires: 'tanks', effect: { extraAttacks: 1 } },
+  { id: 'air', branch: 'army', name: 'Современная авиация', text: 'Авиация на 40% сильнее', cost: 420, icon: 'target', effect: { airMul: 0.4 } },
+  { id: 'hq', branch: 'army', name: 'Генштаб', text: '+2 армии к лимиту', cost: 550, icon: 'flag', requires: 'tanks', effect: { extraArmies: 2 } },
 
   { id: 'forts', branch: 'def', name: 'Линия укреплений', text: '+20% к обороне', cost: 240, icon: 'castle', effect: { defenseMul: 0.2 } },
-  { id: 'aa', branch: 'def', name: 'ПВО', text: '+20% к обороне', cost: 450, icon: 'shield', requires: 'forts', effect: { defenseMul: 0.2 } },
-  { id: 'navy', branch: 'def', name: 'Флот', text: 'Морские атаки без штрафа', cost: 300, icon: 'dove', effect: { seaMaster: true } },
+  { id: 'aa', branch: 'def', name: 'ПВО', text: '+10% к обороне, вражеская авиация наносит на 40% меньше', cost: 400, icon: 'shield', requires: 'forts', effect: { defenseMul: 0.1, aa: 0.4 } },
+  { id: 'navy', branch: 'def', name: 'Морская пехота', text: 'Десант без штрафа, флоты на 25% сильнее', cost: 320, icon: 'dove', effect: { seaMaster: true, fleetMul: 0.25 } },
 
   { id: 'embassy', branch: 'dip', name: 'Посольства', text: '+2 влияния за ход', cost: 220, icon: 'handshake', effect: { influence: 2 } },
   { id: 'radio', branch: 'dip', name: 'Радиовещание', text: '+1 стабильности за ход', cost: 300, icon: 'megaphone', effect: { stability: 1 } },

@@ -1,108 +1,299 @@
 import { COUNTRIES, COUNTRY } from '../data/countries';
-import { REGIONS, regionTitle } from '../data/regions';
-import { type GameState, PLAYER_SAFE_UNTIL, WAR_STARTS, alive, fx, owned } from './state';
+import { REGION, regionTitle } from '../data/regions';
 import {
-  RECRUIT_SIZE, baseIncome, battle, draft, chanceOf, clamp, frontOf, log, recruitCostOf, shiftParty, upkeepOf,
-} from './rules';
-import { changeRelation, isAlly, relation } from './diplomacy';
+  DIFFICULTY, type GameState, PLAYER_SAFE_UNTIL, type Unit, WAR_STARTS, alive, armiesAt, owned, ownedBy, unitsOf,
+} from './state';
+import { land, neighbours, sea } from './graph';
+import {
+  airStrike, airTargets, atWar, canAttackRegion, cantDeclare, chance, crossing, declareWar, enemiesOf, fleetMoves,
+  friends, landBattle, makePeace, moveFleet, seaBlocked,
+} from './war';
+import {
+  armyTotal, build, canRaiseIn, draft, draftCap, maxArmies, price, reinforce, removeTroops, upkeepOf,
+} from './units';
+import { incomeOf, warScore } from './rules';
+import { isAlly, relation } from './diplomacy';
+import { power } from './blocs';
+import { clamp, log } from './log';
 
 /** How eager a government is to start a war, per turn. */
-const AGGRESSION = { nat: 0.35, con: 0.18, soc: 0.14, dem: 0.07 } as const;
-/** Lowest win chance a government accepts before attacking. */
-const NERVE = { nat: 62, con: 68, soc: 70, dem: 78 } as const;
+const AGGRESSION = { nat: 0.3, con: 0.16, soc: 0.12, dem: 0.06 } as const;
+/** How much stronger than the victim a government wants to be before declaring war. */
+const NEED = { nat: 1.25, con: 1.5, soc: 1.6, dem: 2.1 } as const;
+/** Lowest win chance a government accepts when attacking a region. */
+const NERVE = { nat: 50, con: 55, soc: 57, dem: 63 } as const;
 
 /** Army a computer country is willing to keep. Grows with its land. */
-export const armyCap = (s: GameState, nation: string) =>
-  Math.round(COUNTRY[nation].army * 1.3 + baseIncome(s, nation) * 0.4 + draft(s, nation) * 4);
-
-function economy(s: GameState, nation: string) {
-  const n = s.ai[nation];
-  // 0.85 matches a player with average stability
-  const income = Math.round(baseIncome(s, nation) * (1 + (fx(nation).incomeMul ?? 0)) * 0.85);
-  n.money += income - upkeepOf(n.army);
-  // conscripts from its regions, up to what it is willing to keep
-  if (n.army < armyCap(s, nation)) n.army += draft(s, nation);
-  if (n.money < 0) {
-    n.army = Math.max(0, n.army + Math.floor(n.money / 5));
-    n.money = 0;
-  }
-  const cost = recruitCostOf(nation);
-  // keep a small reserve, spend the rest on soldiers up to the cap
-  while (n.money - cost >= income * 0.5 && n.army + RECRUIT_SIZE <= armyCap(s, nation)) {
-    n.money -= cost;
-    n.army += RECRUIT_SIZE;
-  }
-}
-
-/** Picks the most attractive territory this country can probably take, if any. */
-function pickTarget(s: GameState, nation: string): string | null {
-  const ruling = s.ruling[nation];
-  const playerSize = owned(s).length;
-  let best: string | null = null;
-  let bestScore = -Infinity;
-  for (const x of REGIONS) {
-    const target = x.id;
-    const defender = s.owner[target];
-    if (defender === nation || !frontOf(s, nation, target)) continue;
-    if (defender === s.player && s.turn < PLAYER_SAFE_UNTIL) continue;
-    // friends and allies of the player leave it alone
-    const rel = relation(s, nation);
-    if (defender === s.player && (isAlly(s, nation) || rel >= 40)) continue;
-    const chance = chanceOf(s, nation, target);
-    if (chance < NERVE[ruling]) continue;
-    // a growing player looks like a threat worth stopping
-    const threat = defender === s.player ? Math.min(12, Math.max(0, playerSize - 8)) - rel * 0.3 : 0;
-    // capitals end wars; lost home regions are worth taking back
-    const capital = x.capital && x.c === defender ? 15 : 0;
-    const homecoming = x.c === nation ? 25 : 0;
-    const score = chance + x.eco * 0.5 + x.men * 3 + threat + capital + homecoming + Math.random() * 10;
-    if (score > bestScore) {
-      bestScore = score;
-      best = target;
-    }
-  }
-  return best;
-}
+export const armyCap = (s: GameState, n: string) => draftCap(s, n);
 
 export function aiTurn(s: GameState) {
   s.events = [];
   const nations = COUNTRIES.map((c) => c.code).filter((c) => c !== s.player && alive(s, c));
-  for (const n of nations) economy(s, n);
-  if (s.turn < WAR_STARTS) return;
-
-  // random order so the same country doesn't always move first
   for (let i = nations.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [nations[i], nations[j]] = [nations[j], nations[i]];
   }
+  for (const n of nations) economy(s, n);
+  for (const n of nations) production(s, n);
+  if (s.turn >= WAR_STARTS) for (const n of nations) if (alive(s, n)) maybeDeclare(s, n);
+  for (const n of nations) {
+    if (!alive(s, n)) continue;
+    actArmies(s, n);
+    actFleets(s, n);
+    actAir(s, n);
+  }
+  aiPeace(s);
+  offerPeace(s);
+}
 
-  for (const nation of nations) {
-    if (!alive(s, nation) || s.ai[nation].army < 12 || s.turn < s.ai[nation].calmUntil) continue;
-    const ruling = s.ruling[nation];
-    const ready = s.ai[nation].army >= armyCap(s, nation) * 0.85 ? 1.5 : 1;
-    if (Math.random() > AGGRESSION[ruling] * ready) continue;
-    const target = pickTarget(s, nation);
-    if (!target) continue;
+// ---------- money and forces ----------
 
-    const r = battle(s, nation, target);
-    s.ai[nation].calmUntil = s.turn + 3; // rests two turns after a battle
-    s.events.push({ attacker: nation, defender: r.defender, target, won: r.won, eliminated: r.eliminated });
-    shiftParty(s.parties[nation], 'nat', r.won ? 2 : -1);
+function economy(s: GameState, n: string) {
+  const m = s.ai[n];
+  m.money += incomeOf(s, n) - upkeepOf(s, n);
+  if (m.money < 0) {
+    removeTroops(s, n, Math.ceil(-m.money / 5));
+    m.money = 0;
+  }
+  const total = armyTotal(s, n);
+  const cap = armyCap(s, n);
+  if (total < cap) reinforce(s, n, Math.min(draft(s, n), cap - total));
+}
 
-    const a = COUNTRY[nation].name;
-    const t = regionTitle(target);
-    if (r.defender === s.player) {
-      changeRelation(s, nation, -30);
-      if (r.won) {
-        s.stability = clamp(s.stability - 6, 0, 100);
-        log(s, `${a} захватывает вашу территорию: ${t}`, 'bad');
-      } else {
-        log(s, `Вы отбили нападение: ${a} → ${t}`, 'good');
-      }
-      shiftParty(s.parties[s.player], 'nat', 2); // being attacked rallies the nation
-    } else if (r.won) {
-      log(s, `${a} захватывает: ${t} (${COUNTRY[r.defender].name})`, 'info');
-      if (r.eliminated) log(s, `${COUNTRY[r.defender].name} больше не существует`, 'info');
+/** Own regions that most need troops: enemy armies next door minus what already stands there. */
+function frontier(s: GameState, n: string) {
+  const enemies = new Set(enemiesOf(s, n));
+  return ownedBy(s, n).map((r) => {
+    let threat = 0;
+    let enemyLand = false;
+    for (const m of neighbours(r)) {
+      const o = s.owner[m];
+      if (o === n || friends(s, n, o)) continue;
+      const weight = enemies.has(o) ? 1 : 0.3;
+      if (enemies.has(o)) enemyLand = true;
+      threat += armiesAt(s, m, o).reduce((sum, u) => sum + u.str, 0) * weight + (enemies.has(o) ? 4 : 1);
+    }
+    const here = armiesAt(s, r, n).reduce((sum, u) => sum + u.str, 0);
+    return { r, threat, need: threat - here, enemyLand };
+  }).filter((x) => x.threat > 0).sort((a, b) => b.need - a.need);
+}
+
+function production(s: GameState, n: string) {
+  const m = s.ai[n];
+  const reserve = Math.max(30, incomeOf(s, n) * 0.5);
+  const cap = armyCap(s, n);
+  const front = frontier(s, n);
+  const spot = front.find((x) => canRaiseIn(s, n, x.r))?.r ?? (s.capital[n] && canRaiseIn(s, n, s.capital[n]!) ? s.capital[n]! : null);
+  const armies = unitsOf(s, n, 'army');
+
+  if (spot && armies.length < maxArmies(s, n) && !armiesAt(s, spot, n).length && m.money >= price(s, n, 'army') + reserve && armyTotal(s, n) < cap) {
+    build(s, n, 'army', spot);
+  }
+  // top up the armies on the most threatened ground
+  for (let guard = 0; guard < 8; guard++) {
+    if (m.money < price(s, n, 'reinforce') + reserve || armyTotal(s, n) >= cap) break;
+    const onFront = unitsOf(s, n, 'army').filter((u) => s.owner[u.at] === n);
+    if (!onFront.length) break;
+    const needOf = (u: Unit) => front.find((x) => x.r === u.at)?.need ?? -99;
+    const pick = onFront.sort((a, b) => needOf(b) - needOf(a) || a.str - b.str)[0];
+    m.money -= price(s, n, 'reinforce');
+    pick.str += 10;
+  }
+  // ships for coastal countries with enemies across the water, planes once rich enough
+  const coastal = ownedBy(s, n).filter((r) => REGION[r].coast.length && canRaiseIn(s, n, r));
+  const enemyAtSea = enemiesOf(s, n).some((e) => ownedBy(s, e).some((r) => REGION[r].coast.length));
+  if (coastal.length && unitsOf(s, n, 'fleet').length < 2 && (enemyAtSea || Math.random() < 0.05)
+    && m.money >= price(s, n, 'fleet') + reserve) build(s, n, 'fleet', coastal[0]);
+  if (s.turn >= 8 && unitsOf(s, n, 'air').length < 2 && Math.random() < 0.3 && m.money >= price(s, n, 'air') + reserve * 2) {
+    const base = spot ?? coastal[0];
+    if (base) build(s, n, 'air', base);
+  }
+}
+
+// ---------- going to war ----------
+
+/** Strength a country can count on: its own plus a share of its friends'. */
+function backedPower(s: GameState, n: string) {
+  let p = power(s, n);
+  for (const c of COUNTRIES) if (c.code !== n && alive(s, c.code) && friends(s, n, c.code)) p += power(s, c.code) * 0.5;
+  return p;
+}
+
+function maybeDeclare(s: GameState, n: string) {
+  const wars = enemiesOf(s, n).length;
+  if (wars >= 2 || (wars === 1 && Math.random() > 0.15) || s.turn < s.ai[n].calmUntil) return;
+  const ruling = s.ruling[n];
+  if (Math.random() > AGGRESSION[ruling] * DIFFICULTY[s.settings.difficulty].aggression) return;
+  const neighbourOwners = new Set<string>();
+  for (const r of ownedBy(s, n)) for (const m of neighbours(r)) if (s.owner[m] !== n) neighbourOwners.add(s.owner[m]);
+
+  let best: string | null = null;
+  let bestScore = 0;
+  const mine = power(s, n) + 1;
+  for (const o of neighbourOwners) {
+    if (cantDeclare(s, n, o)) continue;
+    let need: number = NEED[ruling];
+    if (o === s.player) {
+      if (s.turn < PLAYER_SAFE_UNTIL || isAlly(s, n) || relation(s, n) >= 40) continue;
+      // a sprawling player looks like a threat worth stopping
+      need -= Math.min(0.4, Math.max(0, owned(s).length - 10) * 0.02);
+      need += clamp(relation(s, n) / 100, -0.15, 0.4);
+      need *= DIFFICULTY[s.settings.difficulty].caution;
+    }
+    const ratio = mine / (backedPower(s, o) + 1);
+    if (ratio < need) continue;
+    const score = ratio + ownedBy(s, o).reduce((sum, r) => sum + REGION[r].eco, 0) / 200;
+    if (score > bestScore) { bestScore = score; best = o; }
+  }
+  if (best) declareWar(s, n, best);
+}
+
+// ---------- moving and fighting ----------
+
+/** One step from `from` toward `goal` through own land (and safe sea crossings). */
+function stepToward(s: GameState, n: string, from: string, goal: string): string | null {
+  if (from === goal) return null;
+  const prev = new Map<string, string>([[from, from]]);
+  const queue = [from];
+  while (queue.length) {
+    const r = queue.shift()!;
+    if (r === goal) break;
+    for (const m of neighbours(r)) {
+      if (prev.has(m) || s.owner[m] !== n) continue;
+      const z = sea.get(r)?.get(m);
+      if (z && !land.get(r)?.has(m) && seaBlocked(s, n, z)) continue;
+      prev.set(m, r);
+      queue.push(m);
     }
   }
+  if (!prev.has(goal)) return null;
+  let step = goal;
+  while (prev.get(step) !== from) step = prev.get(step)!;
+  return step;
+}
+
+function actArmies(s: GameState, n: string) {
+  const ruling = s.ruling[n];
+  const enemies = new Set(enemiesOf(s, n));
+  const front = frontier(s, n);
+  const assigned = new Map<string, number>();
+
+  for (const u of unitsOf(s, n, 'army').sort((a, b) => b.str - a.str)) {
+    if (u.acted || !s.units.includes(u)) continue;
+    // attack the juiciest enemy region we can probably take
+    if (enemies.size) {
+      let best: string | null = null;
+      let bestScore = -Infinity;
+      for (const r of neighbours(u.at)) {
+        const o = s.owner[r];
+        if (!enemies.has(o) || !canAttackRegion(s, u, r)) continue;
+        if (o === s.player && s.turn < PLAYER_SAFE_UNTIL) continue;
+        const ch = chance(s, u, r);
+        if (ch < NERVE[ruling]) continue;
+        const reg = REGION[r];
+        const score = ch + reg.eco * 0.5 + reg.men * 3 + (s.capital[o] === r ? 25 : 0) + (reg.c === n ? 25 : 0) + Math.random() * 8;
+        if (score > bestScore) { bestScore = score; best = r; }
+      }
+      // don't strip a threatened region bare unless the prize is good
+      const hereNeed = front.find((x) => x.r === u.at)?.need ?? 0;
+      if (best && (hereNeed < u.str * 0.6 || bestScore > 85)) {
+        const defender = s.owner[best];
+        const res = landBattle(s, u, best);
+        s.events.push({ attacker: n, defender, target: best, won: res.won, eliminated: res.eliminated });
+        if (defender === s.player) {
+          if (res.won) log(s, `${COUNTRY[n].name} взяла ${regionTitle(best)}`, 'bad');
+          else log(s, `Отбили атаку: ${regionTitle(best)}`, 'good');
+        }
+        if (res.eliminated) log(s, `${COUNTRY[defender].name} больше не существует`, defender === s.player ? 'bad' : 'info');
+        continue;
+      }
+    }
+    // otherwise walk to where the danger is
+    const target = front
+      .map((x) => ({ ...x, left: x.need - (assigned.get(x.r) ?? 0) }))
+      .sort((a, b) => Number(b.enemyLand) - Number(a.enemyLand) || b.left - a.left)[0];
+    if (!target || target.left <= 0 || target.r === u.at) {
+      assigned.set(u.at, (assigned.get(u.at) ?? 0) + u.str);
+      continue;
+    }
+    assigned.set(target.r, (assigned.get(target.r) ?? 0) + u.str);
+    const step = stepToward(s, n, u.at, target.r);
+    if (step && crossing(u.at, step)) { u.at = step; u.acted = true; }
+  }
+}
+
+function actFleets(s: GameState, n: string) {
+  const enemies = enemiesOf(s, n);
+  if (!enemies.length) return;
+  const enemyPower = (z: string) => s.units.filter((x) => x.type === 'fleet' && x.at === z && enemies.includes(x.owner))
+    .reduce((sum, x) => sum + x.str, 0);
+  for (const f of unitsOf(s, n, 'fleet')) {
+    if (f.acted) continue;
+    const opts = fleetMoves(f);
+    // hunt a weaker enemy fleet next door
+    const prey = opts.find((z) => { const p = enemyPower(z); return p > 0 && f.str > p * 1.2; });
+    if (prey) { moveFleet(s, f, prey); continue; }
+    // flee from a stronger one here
+    if (enemyPower(f.at) > f.str) {
+      const safe = opts.find((z) => enemyPower(z) === 0);
+      if (safe) moveFleet(s, f, safe);
+      continue;
+    }
+    // stand guard off an enemy coast
+    const coastHere = (z: string) => enemies.some((e) => ownedBy(s, e).some((r) => REGION[r].coast.includes(z)));
+    if (!coastHere(f.at)) {
+      const go = opts.find((z) => coastHere(z) && enemyPower(z) <= f.str);
+      if (go) moveFleet(s, f, go);
+    }
+  }
+}
+
+function actAir(s: GameState, n: string) {
+  for (const a of unitsOf(s, n, 'air')) {
+    if (a.acted) continue;
+    const t = airTargets(s, a);
+    const score = (target: string) => s.units.filter((u) => u.at === target && atWar(s, n, u.owner))
+      .reduce((sum, u) => sum + u.str, 0);
+    const best = [...t.regions, ...t.zones].sort((x, y) => score(y) - score(x))[0];
+    if (best && score(best) >= 5) airStrike(s, a, best);
+  }
+}
+
+// ---------- peace ----------
+
+/** Computer wars burn out after a while; whoever holds land keeps it. */
+function aiPeace(s: GameState) {
+  for (const w of [...s.wars]) {
+    if (w.a === s.player || w.b === s.player) continue;
+    const age = s.turn - w.since;
+    const beaten = [w.a, w.b].some((x) => alive(s, x) && armyTotal(s, x) < 4);
+    if ((age >= 6 && Math.random() < 0.08 + (age - 6) * 0.02) || (beaten && age >= 3)) makePeace(s, w.a, w.b, 'keep');
+  }
+}
+
+/** A computer country losing to the player may ask for peace. */
+function offerPeace(s: GameState) {
+  if (s.peaceOffer) return;
+  for (const w of s.wars) {
+    if (w.a !== s.player && w.b !== s.player) continue;
+    const n = w.a === s.player ? w.b : w.a;
+    if (s.turn - w.since < 4 || !alive(s, n)) continue;
+    if (warScore(s, n).score >= 25 && Math.random() < 0.35) {
+      s.peaceOffer = n;
+      return;
+    }
+  }
+}
+
+
+/** Lets the computer play a turn for any country, the player's included (balance tests, autoplay). */
+export function autoPlay(s: GameState, n: string) {
+  const own = n === s.player;
+  if (own) s.ai[n].money = s.money;
+  production(s, n);
+  if (s.turn >= WAR_STARTS) maybeDeclare(s, n);
+  actArmies(s, n);
+  actFleets(s, n);
+  actAir(s, n);
+  if (own) s.money = s.ai[n].money;
 }

@@ -1,4 +1,5 @@
 import './style.css';
+import './ui/game.css';
 import europe from './data/europe.json';
 import { App } from './ui/app';
 

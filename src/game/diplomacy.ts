@@ -1,11 +1,12 @@
 import { COUNTRIES, COUNTRY } from '../data/countries';
-import { type GameState, alive, armyOf } from './state';
-import { frontOf, log } from './rules';
+import { type GameState, alive } from './state';
+import { log } from './log';
+import { atWar } from './war';
 
 export const ALLY_MIN = 50;
 export const IMPROVE_STEP = 15;
 export const ALLIANCE_COST = 10;
-/** Share of an ally's army sent to a battle next to its border. */
+/** Share of a friend's army sent to a battle next to it. */
 export const ALLY_HELP = 0.25;
 
 export const relation = (s: GameState, nation: string) => s.relations?.[nation] ?? 0;
@@ -42,7 +43,8 @@ export function improveRelations(s: GameState, nation: string) {
 }
 
 export function canAlly(s: GameState, nation: string) {
-  return alive(s, nation) && !isAlly(s, nation) && relation(s, nation) >= ALLY_MIN && s.influence >= ALLIANCE_COST;
+  return alive(s, nation) && !isAlly(s, nation) && !atWar(s, s.player, nation)
+    && relation(s, nation) >= ALLY_MIN && s.influence >= ALLIANCE_COST;
 }
 
 export function proposeAlliance(s: GameState, nation: string) {
@@ -59,24 +61,6 @@ export function breakAlliance(s: GameState, nation: string) {
   s.relations![nation] = Math.min(relation(s, nation), 0) - 20;
   log(s, `Вы разорвали союз: ${COUNTRY[nation].name}`, 'bad');
   return true;
-}
-
-/** Allies that border the battlefield send part of their army. */
-export function allyHelp(s: GameState, target: string) {
-  let sum = 0;
-  for (const a of s.allies ?? []) {
-    if (!alive(s, a) || s.owner[target] === a) continue;
-    if (frontOf(s, a, target)) sum += armyOf(s, a) * ALLY_HELP;
-  }
-  return sum;
-}
-
-/** Everyone remembers who started the war. */
-export function onPlayerAttack(s: GameState, victim: string) {
-  for (const c of COUNTRIES) {
-    if (c.code === s.player || !alive(s, c.code)) continue;
-    changeRelation(s, c.code, c.code === victim ? -40 : -3);
-  }
 }
 
 export function driftRelations(s: GameState) {

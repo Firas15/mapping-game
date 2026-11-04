@@ -19,6 +19,8 @@ export interface RegionDef {
   eco: number;
   /** soldiers per turn */
   men: number;
+  /** sea zones it touches; empty for inland regions */
+  coast: string[];
 }
 
 /**
@@ -43,7 +45,7 @@ const MEN_SHARE = 0.07;
 const hash = (s: string) => [...s].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7);
 const CYCLE: RegionKind[] = ['industry', 'hub', 'industry', 'manpower', 'industry'];
 
-interface Props { c?: string; n?: string; a?: number; cap?: number; p?: [number, number] }
+interface Props { c?: string; n?: string; a?: number; cap?: number; p?: [number, number]; z?: string[] }
 
 const topo = europe as unknown as Topology<{ land: GeometryCollection<Props> }>;
 const raw = (feature(topo, topo.objects.land) as unknown as { features: { id: string; properties: Props }[] }).features
@@ -82,6 +84,7 @@ for (const [c, list] of byCountry) {
     REGIONS.push({
       id: f.id, c, name: f.properties.n ?? COUNTRY[c].name, area: f.properties.a ?? 0,
       capital: !!f.properties.cap, point: f.properties.p, kind: kinds.get(f.id)!, eco: eco[i], men: men[i],
+      coast: f.properties.z ?? [],
     });
   });
 }

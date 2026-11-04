@@ -1,3 +1,4 @@
+import { reinforce, removeTroops } from './units';
 import type { GameState } from './state';
 import { grossIncome, shiftParty, holdElections } from './rules';
 
@@ -27,7 +28,7 @@ export const CARDS: Card[] = [
   {
     id: 'draft', title: 'Всеобщий призыв', icon: 'swords',
     effects: () => [up('+15 армии'), down('−6 стабильности')],
-    apply: (s) => { s.army += 15; clampStab(s, -6); shiftParty(s.parties[s.player], 'nat', 3); },
+    apply: (s) => { reinforce(s, s.player, 15); clampStab(s, -6); shiftParty(s.parties[s.player], 'nat', 3); },
   },
   {
     id: 'propaganda', title: 'Пропаганда', icon: 'megaphone',
@@ -39,13 +40,13 @@ export const CARDS: Card[] = [
     id: 'factories', title: 'Новые заводы', icon: 'factory',
     effects: (s) => [up('+8% к доходу навсегда'), down(`−${factoryCost(s)} денег`)],
     blocked: (s) => needMoney(factoryCost(s))(s),
-    apply: (s) => { s.money -= factoryCost(s); s.bonus.incomeMul += 0.08; shiftParty(s.parties[s.player], 'soc', 3); },
+    apply: (s) => { s.money -= factoryCost(s); s.nb[s.player].incomeMul += 0.08; shiftParty(s.parties[s.player], 'soc', 3); },
   },
   {
     id: 'reform', title: 'Военная реформа', icon: 'shield',
     effects: () => [up('+10% к атаке навсегда'), down('−150 денег')],
     blocked: needMoney(150),
-    apply: (s) => { s.money -= 150; s.bonus.attackMul += 0.1; shiftParty(s.parties[s.player], 'nat', 2); },
+    apply: (s) => { s.money -= 150; s.nb[s.player].attackMul += 0.1; shiftParty(s.parties[s.player], 'nat', 2); },
   },
   {
     id: 'festival', title: 'Народный праздник', icon: 'party',
@@ -61,23 +62,23 @@ export const CARDS: Card[] = [
   {
     id: 'reserve', title: 'Мобилизация резерва', icon: 'users',
     effects: () => [up('+25 армии'), down('−30% дохода в этот ход'), down('−4 стабильности')],
-    apply: (s) => { s.army += 25; s.turnIncomeMul -= 0.3; clampStab(s, -4); },
+    apply: (s) => { reinforce(s, s.player, 25); s.turnIncomeMul -= 0.3; clampStab(s, -4); },
   },
   {
     id: 'amnesty', title: 'Амнистия', icon: 'dove',
     effects: () => [up('+8 стабильности'), down('−5 армии')],
-    apply: (s) => { s.army = Math.max(0, s.army - 5); clampStab(s, 8); shiftParty(s.parties[s.player], 'dem', 2); },
+    apply: (s) => { removeTroops(s, s.player, 5); clampStab(s, 8); shiftParty(s.parties[s.player], 'dem', 2); },
   },
   {
     id: 'loan', title: 'Внешний займ', icon: 'bank',
     effects: (s) => [up(`+${loanSize(s)} денег сейчас`), down('−4% к доходу навсегда')],
-    apply: (s) => { s.money += loanSize(s); s.bonus.incomeMul -= 0.04; },
+    apply: (s) => { s.money += loanSize(s); s.nb[s.player].incomeMul -= 0.04; },
   },
   {
     id: 'fortify', title: 'Укрепления', icon: 'castle',
     effects: () => [up('+15% к обороне навсегда'), down('−100 денег')],
     blocked: needMoney(100),
-    apply: (s) => { s.money -= 100; s.bonus.defenseMul += 0.15; shiftParty(s.parties[s.player], 'con', 2); },
+    apply: (s) => { s.money -= 100; s.nb[s.player].defenseMul += 0.15; shiftParty(s.parties[s.player], 'con', 2); },
   },
   {
     id: 'agitation', title: 'Агитация', icon: 'flag',

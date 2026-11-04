@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "build:map": "node scripts/build-map.mjs",
-    "build:flags": "node scripts/copy-flags.mjs"
+    "build:flags": "node scripts/copy-flags.mjs",
+    "sim": "tsx scripts/sim.ts"
   },
   "devDependencies": {
     "@types/d3-geo": "^3.1.1",
@@ -21,6 +22,7 @@
     "polygon-clipping": "^0.15.7",
     "topojson-server": "^3.0.1",
     "topojson-simplify": "^3.0.3",
+    "tsx": "^4.23.15",
     "typescript": "~7.0.2",
     "vite": "^8.3.5",
     "world-atlas": "^2.0.2"

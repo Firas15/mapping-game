@@ -243,6 +243,35 @@ topo = simplify(topo, quantile(topo, KEEP));
 // drop weights left by presimplify to keep the file small
 for (const arc of topo.arcs) for (const pt of arc) pt.length = 2;
 
+// ---------- 5. coasts: which sea zones each region touches ----------
+// Zone centres come from src/data/seas.ts so they are defined in one place.
+const seaSrc = fs.readFileSync('src/data/seas.ts', 'utf8');
+const ZONES = [...seaSrc.matchAll(/id: '(\w+)'.*?center: \[([-\d.]+), ([-\d.]+)\]/g)].map((m) => ({ id: m[1], c: [Number(m[2]), Number(m[3])] }));
+const arcIdx = (i) => (i < 0 ? ~i : i);
+const arcsOf = (g) => (g.type === 'Polygon' ? g.arcs.flat() : g.type === 'MultiPolygon' ? g.arcs.flat(2) : []).map(arcIdx);
+const used = new Map();
+for (const g of topo.objects.land.geometries) for (const a of arcsOf(g)) used.set(a, (used.get(a) ?? 0) + 1);
+const onBox = ([x, y]) => Math.abs(x - W) < 0.01 || Math.abs(x - E) < 0.01 || Math.abs(y - S) < 0.01 || Math.abs(y - N) < 0.01;
+for (const g of topo.objects.land.geometries) {
+  if (!g.properties.c) continue;
+  const hits = new Map();
+  let total = 0;
+  for (const a of arcsOf(g)) {
+    if (used.get(a) !== 1) continue; // shared with another region = land border
+    const line = feature(topo, { type: 'LineString', arcs: [a] }).geometry.coordinates;
+    for (let k = 0; k < line.length; k += 2) {
+      const p = line[k];
+      if (onBox(p)) continue;
+      let best = null, bestD = 9;
+      for (const z of ZONES) { const d = dist(p, z.c); if (d < bestD) { bestD = d; best = z.id; } }
+      if (best) { hits.set(best, (hits.get(best) ?? 0) + 1); total++; }
+    }
+  }
+  // a zone counts if a fair share of the coastline faces it
+  const zones = [...hits].filter(([, n]) => n >= 3 && n >= total * 0.08).sort((a, b) => b[1] - a[1]).map(([z]) => z);
+  if (zones.length) g.properties.z = zones;
+}
+
 fs.mkdirSync('src/data', { recursive: true });
 fs.writeFileSync('src/data/europe.json', JSON.stringify(topo));
 const perCountry = {};

@@ -1,206 +1,146 @@
 import { COUNTRIES, COUNTRY, PARTIES, PARTY_ORDER, type PartyId } from '../data/countries';
-import { CAPITAL, REGION, REGIONS, regionTitle } from '../data/regions';
-import { land, sea } from './graph';
+import { REGION, REGIONS, regionTitle } from '../data/regions';
 import { drawHand } from './cards';
 import { aiTurn } from './ai';
 import { rollEvents } from './events';
-import { upg, upgSeaMaster } from './upgrades';
-import { allyHelp, driftRelations, isAlly, onPlayerAttack } from './diplomacy';
+import { upg } from './upgrades';
+import { driftRelations, isAlly } from './diplomacy';
 import {
-  type GameState, type Parties, CAPITAL_BONUS, CAPITULATE_AFTER, ELECTION_EVERY, HOME_BONUS, MAX_ATTACKS, addArmy, alive, armyOf, fx, isWinter, owned,
-  ownedBy, playerRuling, topParty,
+  DIFFICULTY, ELECTION_EVERY, SHORT_TURNS, type GameState, type Parties, type Unit, alive, fx, owned, ownedBy,
+  playerRuling, topParty, unitsOf,
 } from './state';
+import { clamp, log } from './log';
+import {
+  type BattleResult, type PeaceTerms, atWar, canAttackRegion, landBattle, transfer, updateCapitals, updateUnrest, warOf, yieldShare,
+} from './war';
+import { armyTotal, draft, draftCap, reinforce, removeTroops, upkeepOf } from './units';
+import { progressFocus } from './focus';
+import { bordering, checkCoalition, updateBlocs } from './blocs';
+import { checkAchievements, rankOf, recordHistory } from './stats';
 
-export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-export const log = (s: GameState, text: string, tone: 'good' | 'bad' | 'info' = 'info') => {
-  s.log.unshift({ turn: s.turn, text, tone });
-  s.log.length = Math.min(s.log.length, 40);
-};
+export { clamp, log };
 
 // ---------- economy ----------
 
-export const RECRUIT_SIZE = 10;
-export const recruitCostOf = (nation: string) => Math.round(100 * (1 + (fx(nation).armyCostMul ?? 0)));
-export const recruitCost = (s: GameState) =>
-  Math.round(100 * (1 + (fx(s.player).armyCostMul ?? 0) + upg(s, 'armyCostMul')));
-export const maxAttacks = (s: GameState) => MAX_ATTACKS + upg(s, 'extraAttacks');
-export const upkeepOf = (army: number) => Math.round(army * 0.25);
-export const upkeep = (s: GameState) => upkeepOf(s.army);
 export const stabilityFactor = (s: GameState) => 0.5 + s.stability / 200;
 
 export function incomeMul(s: GameState) {
-  return 1 + (fx(s.player).incomeMul ?? 0) + s.bonus.incomeMul + upg(s, 'incomeMul') + (playerRuling(s) === 'soc' ? 0.1 : 0);
+  return 1 + (fx(s.player).incomeMul ?? 0) + s.nb[s.player].incomeMul + upg(s, 'incomeMul') + (playerRuling(s) === 'soc' ? 0.1 : 0);
 }
 
-/** Money a nation's land brings before modifiers. */
-export const baseIncome = (s: GameState, nation: string) =>
-  ownedBy(s, nation).reduce((sum, r) => sum + REGION[r].eco, 0) + (fx(nation).flatIncome ?? 0);
-
-/** Soldiers a nation's regions raise each turn. */
-export const draft = (s: GameState, nation: string) => ownedBy(s, nation).reduce((sum, r) => sum + REGION[r].men, 0);
-/** Conscription only tops the army up to this size (starting army + 8 turns of it); past it soldiers cost money. */
-export const draftCap = (s: GameState, nation: string) => COUNTRY[nation].army + draft(s, nation) * 8;
-
-/** One-off spoils for taking a region: its treasury and some of its people. */
-export const trophies = (region: string) => ({ money: REGION[region].eco * 2, army: REGION[region].men * 3 });
+/** Money a country's land brings before modifiers. Occupied land gives half until integrated. */
+export const baseIncome = (s: GameState, n: string) =>
+  ownedBy(s, n).reduce((sum, r) => sum + REGION[r].eco * yieldShare(s, r), 0) + (fx(n).flatIncome ?? 0);
 
 /** Player income before upkeep and one-turn modifiers. */
 export const grossIncome = (s: GameState) => Math.round(baseIncome(s, s.player) * incomeMul(s) * stabilityFactor(s));
-export const netIncome = (s: GameState) => Math.round(grossIncome(s) * s.turnIncomeMul) - upkeep(s);
+export const netIncome = (s: GameState) => Math.round(grossIncome(s) * s.turnIncomeMul) - upkeepOf(s, s.player);
+
+/** Income of any country, comparable between player and computer. */
+export function incomeOf(s: GameState, n: string) {
+  if (n === s.player) return grossIncome(s);
+  const mul = (1 + (fx(n).incomeMul ?? 0) + s.nb[n].incomeMul) * 0.85 * DIFFICULTY[s.settings.difficulty].aiIncome;
+  return Math.round(baseIncome(s, n) * mul);
+}
 
 export function influenceGain(s: GameState) {
   const r = playerRuling(s);
-  return 1 + (fx(s.player).influence ?? 0) + upg(s, 'influence') + (r === 'dem' ? 2 : 0) - (r === 'nat' ? 1 : 0);
+  return 1 + (fx(s.player).influence ?? 0) + upg(s, 'influence') + s.nb[s.player].influence
+    + (r === 'dem' ? 2 : 0) - (r === 'nat' ? 1 : 0);
 }
 
-export function recruit(s: GameState): boolean {
-  const cost = recruitCost(s);
-  if (s.money < cost) return false;
-  s.money -= cost;
-  s.army += RECRUIT_SIZE;
-  return true;
-}
+// ---------- player's war ----------
 
-// ---------- war ----------
-
-export type Front = 'land' | 'sea' | null;
-
-/** How a nation can reach a territory, if at all. */
-export function frontOf(s: GameState, attacker: string, target: string): Front {
-  if (s.owner[target] === attacker) return null;
-  const mine = ownedBy(s, attacker);
-  if (mine.some((c) => land.get(c)?.has(target))) return 'land';
-  if (mine.some((c) => sea.get(c)?.has(target))) return 'sea';
-  return null;
-}
-/** Where the player can attack. Allies are off limits. */
-export const front = (s: GameState, target: string) =>
-  isAlly(s, s.owner[target]) ? null : frontOf(s, s.player, target);
-
-export function attackPowerOf(s: GameState, attacker: string, f: Front, target?: string) {
-  const me = attacker === s.player;
-  const seaMaster = fx(attacker).seaMaster || (me && upgSeaMaster(s));
-  const seaPenalty = f === 'sea' && !seaMaster ? 0.75 : 1;
-  const bonus = me ? s.bonus.attackMul + upg(s, 'attackMul') : 0;
-  const mul = 1 + (fx(attacker).attackMul ?? 0) + bonus + (s.ruling[attacker] === 'nat' ? 0.15 : 0);
-  const help = me && target ? allyHelp(s, target) : 0;
-  return armyOf(s, attacker) * mul * seaPenalty + help;
-}
-export const attackPower = (s: GameState, f: Front, target?: string) => attackPowerOf(s, s.player, f, target);
-
-/** The owner's whole army defends; the land itself (its trait, winter) helps. */
-export function defensePower(s: GameState, target: string) {
-  const owner = s.owner[target];
-  const region = REGION[target];
-  const e = fx(region.c);
-  const mine = owner === s.player;
-  const bonus = mine ? s.bonus.defenseMul + upg(s, 'defenseMul') : 0;
-  const home = owner === region.c ? HOME_BONUS + (region.capital ? CAPITAL_BONUS : 0) : 0;
-  const mul = 1 + (e.defenseMul ?? 0) + (isWinter(s.turn) ? e.winterDefenseMul ?? 0 : 0) + bonus + home;
-  return Math.max(1, armyOf(s, owner) * mul + (mine ? allyHelp(s, target) : 0));
-}
-
-export function chanceOf(s: GameState, attacker: string, target: string) {
-  const f = frontOf(s, attacker, target);
-  if (!f) return 0;
-  const a = attackPowerOf(s, attacker, f, target) ** 2;
-  const d = defensePower(s, target) ** 2;
-  return clamp(Math.round((a / (a + d)) * 100), 3, 97);
-}
-export const winChance = (s: GameState, target: string) => chanceOf(s, s.player, target);
-
-/** Fights one battle and applies losses and the change of owner. */
-export function battle(s: GameState, attacker: string, target: string, roll = Math.random()) {
-  const defender = s.owner[target];
-  const f = frontOf(s, attacker, target);
-  const chance = chanceOf(s, attacker, target);
-  const att = attackPowerOf(s, attacker, f, target);
-  const def = defensePower(s, target);
-  const won = roll * 100 < chance;
-  if (won) {
-    s.owner[target] = attacker;
-    addArmy(s, attacker, -def * 0.3);
-    addArmy(s, defender, -att * 0.25);
-    // losing land hurts morale
-    addArmy(s, defender, -armyOf(s, defender) * 0.05);
-  } else {
-    addArmy(s, attacker, -Math.min(armyOf(s, attacker), def * 0.5));
-    addArmy(s, defender, -att * 0.15);
-  }
-  let loot = { money: 0, army: 0 };
-  if (won) {
-    loot = trophies(target);
-    addArmy(s, attacker, loot.army);
-    if (attacker === s.player) s.money += loot.money;
-    else s.ai[attacker].money += loot.money;
-  }
-  const eliminated = won && !alive(s, defender);
-  if (eliminated && defender !== s.player) s.ai[defender].army = 0;
-  return { won, defender, eliminated, loot };
-}
-
-export function attack(s: GameState, target: string, roll = Math.random()): 'win' | 'loss' | null {
-  if (!front(s, target) || s.attacksLeft <= 0 || s.army < 5) return null;
-  const name = regionTitle(target);
-  s.attacksLeft--;
-  const warWeariness = (playerRuling(s) === 'dem' ? 3 : 0) + (fx(REGION[target].c).aggressorStability ?? 0);
-  onPlayerAttack(s, s.owner[target]);
-  const r = battle(s, s.player, target, roll);
+/** Player army attacks a region of a country already at war with us. */
+export function playerAttack(s: GameState, u: Unit, to: string): BattleResult | null {
+  const target = s.owner[to];
+  if (!atWar(s, s.player, target) || !canAttackRegion(s, u, to)) return null;
+  const title = regionTitle(to);
+  const r = landBattle(s, u, to);
   if (r.won) {
-    s.stability = clamp(s.stability - 4 - warWeariness, 0, 100);
-    shiftParty(s.parties[s.player], 'nat', 3);
-    const spoils = [r.loot.money ? `+${r.loot.money} денег` : '', r.loot.army ? `+${r.loot.army} армии` : ''].filter(Boolean).join(', ');
-    log(s, `Захвачено: ${name}${spoils ? `. Трофеи: ${spoils}` : ''}`, 'good');
+    s.stability = clamp(s.stability - 1 - (playerRuling(s) === 'dem' ? 1 : 0) - (fx(REGION[to].c).aggressorStability ? 5 : 0), 0, 100);
+    shiftParty(s.parties[s.player], 'nat', 2);
+    log(s, `Взято: ${title}`, 'good');
     if (r.eliminated) log(s, `${COUNTRY[r.defender].name} больше не существует`, 'good');
-    else if (CAPITAL[r.defender] === target) {
-      log(s, `Взята столица страны ${COUNTRY[r.defender].name}! Удержите её ${CAPITULATE_AFTER} хода, и страна капитулирует`, 'good');
-    }
-    checkWin(s);
-    return 'win';
+    else if (r.capital) log(s, `Пала столица: ${COUNTRY[r.defender].name}`, 'good');
+  } else {
+    s.stability = clamp(s.stability - 1, 0, 100);
+    log(s, `Атака отбита: ${title}`, 'bad');
   }
-  s.stability = clamp(s.stability - 2 - warWeariness, 0, 100);
-  log(s, `Атака отбита: ${name}`, 'bad');
-  return 'loss';
+  checkWin(s);
+  checkAchievements(s);
+  return r;
 }
 
-function checkWin(s: GameState) {
-  if (owned(s).length === REGIONS.length) {
-    s.won = true;
-    log(s, 'Вся Европа под вашим контролем!', 'good');
-  }
+// ---------- peace ----------
+
+/** How the war with `n` is going for the player: positive means winning. */
+export function warScore(s: GameState, n: string) {
+  const w = warOf(s, s.player, n);
+  if (!w) return { score: 0, taken: 0, lost: 0 };
+  const taken = Object.keys(s.owner).filter((r) => s.owner[r] === s.player && (REGION[r].c === n || w.taken[r] === n)).length;
+  const lost = Object.keys(s.owner).filter((r) => s.owner[r] === n && (REGION[r].c === s.player || w.taken[r] === s.player)).length;
+  const theirs = REGIONS.filter((r) => r.c === n).length;
+  const mine = REGIONS.filter((r) => r.c === s.player).length;
+  const ratio = armyTotal(s, s.player) / (armyTotal(s, n) + 1);
+  const score = (taken / Math.max(1, theirs)) * 100 - (lost / Math.max(1, mine)) * 100
+    + clamp((ratio - 1) * 15, -20, 20) + Math.min(20, (s.turn - w.since) * 2);
+  return { score: Math.round(score), taken, lost };
 }
 
-/** Peaceful annexation for influence: works on a country that still holds its own capital. */
-export const annexCost = (s: GameState, target: string) => {
-  const nation = s.owner[target];
+/** Will the enemy sign these terms? */
+export function peaceAnswer(s: GameState, n: string, terms: PeaceTerms): { ok: boolean; why: string } {
+  const { score, taken, lost } = warScore(s, n);
+  if (terms === 'white') {
+    return score >= 0 || (taken === 0 && lost === 0)
+      ? { ok: true, why: 'Согласятся вернуть всё как было' }
+      : { ok: false, why: 'Откажутся: они побеждают' };
+  }
+  if (terms === 'keep') {
+    if (taken <= lost) return { ok: true, why: 'Согласятся: им это выгодно' };
+    return score >= 20 ? { ok: true, why: 'Согласятся отдать занятое' } : { ok: false, why: 'Откажутся: вы взяли слишком мало' };
+  }
+  return score >= 40 ? { ok: true, why: 'Согласятся заплатить' } : { ok: false, why: 'Откажутся: нужен перевес побольше' };
+}
+
+// ---------- peaceful annexation ----------
+
+export const annexCost = (s: GameState, nation: string) => {
   const eco = ownedBy(s, nation).reduce((sum, r) => sum + REGION[r].eco, 0);
-  const base = 12 + armyOf(s, nation) * 0.8 + eco * 0.4;
-  // friends are cheaper, enemies dearer; allies cost half
-  const mood = 1 - (s.relations?.[nation] ?? 0) / 200;
+  const base = 12 + armyTotal(s, nation) * 0.6 + eco * 0.4;
+  const mood = 1 - (s.relations[nation] ?? 0) / 200;
   const ally = isAlly(s, nation) ? 0.5 : 1;
   return Math.round(base * mood * ally * (1 + upg(s, 'annexMul')));
 };
 
-/** A country that still holds its capital can be annexed: allies anywhere, others next to the border. */
-export function canAnnexHere(s: GameState, target: string) {
-  const nation = s.owner[target];
-  return nation !== s.player && s.owner[CAPITAL[nation]] === nation && (isAlly(s, nation) || front(s, target) !== null);
+/** A country at peace with us that still has its capital: allies anywhere, others if they border us. */
+export function cantAnnex(s: GameState, nation: string): string | null {
+  if (nation === s.player || !alive(s, nation)) return 'Нельзя';
+  if (atWar(s, s.player, nation)) return 'Сначала заключите мир';
+  const cap = s.capital[nation];
+  if (!cap || s.owner[cap] !== nation) return 'У страны нет столицы';
+  if (!isAlly(s, nation) && !bordering(s, s.player, nation)) return 'Нужна общая граница или союз';
+  if (s.influence < annexCost(s, nation)) return `Нужно ${annexCost(s, nation)} влияния`;
+  return null;
 }
-export const canAnnex = (s: GameState, target: string) => canAnnexHere(s, target) && s.influence >= annexCost(s, target);
 
-export function annex(s: GameState, target: string) {
-  if (!canAnnex(s, target)) return false;
-  const nation = s.owner[target];
-  s.influence -= annexCost(s, target);
-  s.allies = (s.allies ?? []).filter((a) => a !== nation);
+export function annex(s: GameState, nation: string) {
+  if (cantAnnex(s, nation)) return false;
+  s.influence -= annexCost(s, nation);
+  s.allies = s.allies.filter((a) => a !== nation);
   const lands = ownedBy(s, nation);
-  for (const r of lands) s.owner[r] = s.player;
-  s.army += Math.round(s.ai[nation].army * 0.5); // half their soldiers join
-  s.ai[nation].army = 0;
+  for (const r of lands) transfer(s, r, s.player);
+  for (const r of lands) { s.heldSince[r] = s.turn - 6; delete s.unrest[r]; } // a peaceful union settles faster
+  // half their forces join ours
+  for (const u of unitsOf(s, nation)) { u.owner = s.player; u.str = Math.max(1, Math.round(u.str * 0.5)); }
+  s.capital[nation] = null;
+  for (const b of s.blocs) b.members = b.members.filter((m) => m !== nation);
   s.stability = clamp(s.stability - 2, 0, 100);
   shiftParty(s.parties[s.player], 'dem', 2);
-  log(s, `Мирно присоединено: ${COUNTRY[nation].name}, областей: ${lands.length}`, 'good');
+  s.stats.annexed++;
+  log(s, `Мирно присоединена: ${COUNTRY[nation].name}`, 'good');
   checkWin(s);
+  checkAchievements(s);
   return true;
 }
 
@@ -241,87 +181,73 @@ export function holdElections(s: GameState) {
   s.nextElection += ELECTION_EVERY;
 }
 
+// ---------- end of game ----------
+
+export function checkWin(s: GameState) {
+  if (s.won || s.lost) return;
+  if (owned(s).length === REGIONS.length) {
+    s.won = true;
+    s.endReason = 'unified';
+    return;
+  }
+  if (s.settings.short && s.turn > SHORT_TURNS) {
+    if (rankOf(s, 'land') === 1) { s.won = true; s.endReason = 'short-win'; }
+    else { s.lost = true; s.endReason = 'short-lose'; }
+  }
+}
+
 // ---------- turn ----------
 
 export function endTurn(s: GameState) {
   const income = netIncome(s);
   s.money += income;
-  const cap = draftCap(s, s.player);
-  if (s.army < cap) s.army = Math.min(cap, s.army + draft(s, s.player));
   if (s.money < 0) {
     // unpaid soldiers desert
-    const lost = Math.min(s.army, Math.ceil(-s.money / 5));
-    s.army -= lost;
+    const lost = Math.ceil(-s.money / 5);
+    removeTroops(s, s.player, lost);
     s.money = 0;
     s.stability = clamp(s.stability - 5, 0, 100);
-    log(s, `Нечем платить армии: дезертировало ${lost}`, 'bad');
+    log(s, `Нечем платить армии: дезертировали ${lost}`, 'bad');
   }
+  const total = armyTotal(s, s.player);
+  const cap = draftCap(s, s.player);
+  if (total < cap) reinforce(s, s.player, Math.min(draft(s, s.player), cap - total));
 
   const e = fx(s.player);
-  let stab = (e.stability ?? 0) + upg(s, 'stability') + (playerRuling(s) === 'con' ? 1 : 0);
+  let stab = (e.stability ?? 0) + upg(s, 'stability') + s.nb[s.player].stability + (playerRuling(s) === 'con' ? 1 : 0);
   if (s.stability < 50) stab += 1;
   else if (s.stability > 80) stab -= 1;
+  // long wars tire a democracy
+  if (playerRuling(s) === 'dem' && s.wars.some((w) => w.a === s.player || w.b === s.player)) stab -= 1;
   s.stability = clamp(s.stability + stab, 0, 100);
   s.influence = Math.max(0, s.influence + influenceGain(s));
 
-  for (const x of COUNTRIES) {
-    // quiet drift of public opinion
-    shiftParty(s.parties[x.code], PARTY_ORDER[Math.floor(Math.random() * 4)], Math.random() * 2);
-  }
-  // unrest pushes people to the extremes
+  for (const x of COUNTRIES) shiftParty(s.parties[x.code], PARTY_ORDER[Math.floor(Math.random() * 4)], Math.random() * 2);
   if (s.stability < 35) shiftParty(s.parties[s.player], Math.random() < 0.5 ? 'nat' : 'soc', 2);
 
   s.turn++;
+  for (const u of s.units) u.acted = false;
   aiTurn(s);
-  checkCapitals(s);
-  if (owned(s).length === 0) {
+  updateUnrest(s);
+  updateCapitals(s);
+  if (!s.lost && owned(s).length === 0) {
     s.lost = true;
-    log(s, 'Ваша страна пала', 'bad');
+    s.endReason = 'conquered';
+    log(s, 'Наша страна пала', 'bad');
   }
+  progressFocus(s, (c) => alive(s, c));
   if (s.turn >= s.nextElection) holdElections(s);
   driftRelations(s);
-  s.attacksLeft = maxAttacks(s);
+  updateBlocs(s);
+  checkCoalition(s);
+
+  for (const u of s.units) u.acted = false;
   s.turnIncomeMul = 1;
   s.played = null;
   s.hand = drawHand();
   if (!s.lost) rollEvents(s);
+  recordHistory(s);
+  checkWin(s);
+  checkAchievements(s);
   return income;
-}
-
-// ---------- capitals ----------
-
-/** A country whose capital stays in enemy hands for a few turns gives up. */
-export function checkCapitals(s: GameState) {
-  for (const c of COUNTRIES) {
-    const n = c.code;
-    if (!alive(s, n)) { delete s.capHold[n]; continue; }
-    const holder = s.owner[CAPITAL[n]];
-    if (holder === n) { delete s.capHold[n]; continue; }
-    const h = s.capHold[n];
-    s.capHold[n] = h && h.by === holder ? { by: holder, turns: h.turns + 1 } : { by: holder, turns: 1 };
-    const left = CAPITULATE_AFTER - s.capHold[n].turns;
-    if (left <= 0) capitulate(s, n, holder);
-    else if (n === s.player) log(s, `Наша столица в руках врага (${COUNTRY[holder].name}). Ходов до капитуляции: ${left}`, 'bad');
-  }
-}
-
-/** Turns left before a country capitulates, or null if its capital is safe. */
-export function capitulationIn(s: GameState, nation: string): number | null {
-  const h = s.capHold[nation];
-  return h ? CAPITULATE_AFTER - h.turns : null;
-}
-
-function capitulate(s: GameState, nation: string, winner: string) {
-  const lands = ownedBy(s, nation);
-  for (const r of lands) s.owner[r] = winner;
-  if (nation !== s.player) s.ai[nation].army = 0;
-  delete s.capHold[nation];
-  s.allies = (s.allies ?? []).filter((a) => a !== nation);
-  if (nation === s.player) {
-    s.lost = true;
-    log(s, 'Мы капитулировали', 'bad');
-  } else {
-    log(s, `${COUNTRY[nation].name} капитулирует перед страной ${COUNTRY[winner].name}`, winner === s.player ? 'good' : 'info');
-    if (winner === s.player) checkWin(s);
-  }
 }

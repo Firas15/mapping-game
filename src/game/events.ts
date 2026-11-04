@@ -1,3 +1,4 @@
+import { armyTotal, reinforce, removeTroops, scaleArmies } from './units';
 import { COUNTRIES, COUNTRY, PARTIES, PARTY_ORDER, type PartyId } from '../data/countries';
 import type { Effect } from './cards';
 import { type GameState, alive, isWinter } from './state';
@@ -41,7 +42,7 @@ export const EVENTS: GameEvent[] = [
     weight: (s) => (s.stability >= 50 ? 3 : 1),
     options: [
       { label: 'Пополнить казну', effects: (s) => [up(`+${inc(s) * 2} денег`)], apply: (s) => { s.money += inc(s) * 2; } },
-      { label: 'Вложить в промышленность', effects: () => [up('+6% к доходу навсегда')], apply: (s) => { s.bonus.incomeMul += 0.06; } },
+      { label: 'Вложить в промышленность', effects: () => [up('+6% к доходу навсегда')], apply: (s) => { s.nb[s.player].incomeMul += 0.06; } },
     ],
   },
   {
@@ -67,7 +68,7 @@ export const EVENTS: GameEvent[] = [
       },
       {
         label: 'Разогнать', effects: () => [up('+5 стабильности'), down('−8 армии'), down('+5% националистам')],
-        apply: (s) => { s.army = Math.max(0, s.army - 8); stab(s, 5); shiftParty(s.parties[s.player], 'nat', 5); },
+        apply: (s) => { removeTroops(s, s.player, 8); stab(s, 5); shiftParty(s.parties[s.player], 'nat', 5); },
       },
     ],
   },
@@ -87,7 +88,7 @@ export const EVENTS: GameEvent[] = [
       },
       {
         label: 'Подавить силой', effects: () => [down('−30% армии'), up('+15 стабильности')],
-        apply: (s) => { s.army = Math.round(s.army * 0.7); stab(s, 15); shiftParty(s.parties[s.player], 'nat', 6); },
+        apply: (s) => { scaleArmies(s, s.player, 0.7); stab(s, 15); shiftParty(s.parties[s.player], 'nat', 6); },
       },
     ],
   },
@@ -96,7 +97,7 @@ export const EVENTS: GameEvent[] = [
     text: () => 'Геологи нашли богатое месторождение. Иностранные компании уже стучатся в дверь.',
     weight: () => 2,
     options: [
-      { label: 'Добывать самим', effects: () => [up('+7% к доходу навсегда'), down('−80 денег')], apply: (s) => { pay(s, 80); s.bonus.incomeMul += 0.07; } },
+      { label: 'Добывать самим', effects: () => [up('+7% к доходу навсегда'), down('−80 денег')], apply: (s) => { pay(s, 80); s.nb[s.player].incomeMul += 0.07; } },
       { label: 'Продать права', effects: (s) => [up(`+${inc(s) * 3} денег`)], apply: (s) => { s.money += inc(s) * 3; } },
     ],
   },
@@ -112,10 +113,10 @@ export const EVENTS: GameEvent[] = [
   {
     id: 'plague', title: 'Эпидемия', icon: 'shield',
     text: () => 'В казармах вспышка болезни. Врачи просят ввести карантин.',
-    weight: (s) => (s.army > 20 ? 2 : 0),
+    weight: (s) => (armyTotal(s, s.player) > 20 ? 2 : 0),
     options: [
       { label: 'Карантин', effects: () => [down('−30% дохода в этот ход')], apply: (s) => { s.turnIncomeMul -= 0.3; } },
-      { label: 'Продолжать службу', effects: () => [down('−15% армии')], apply: (s) => { s.army = Math.round(s.army * 0.85); } },
+      { label: 'Продолжать службу', effects: () => [down('−15% армии')], apply: (s) => { scaleArmies(s, s.player, 0.85); } },
     ],
   },
   {
@@ -123,7 +124,7 @@ export const EVENTS: GameEvent[] = [
     text: () => 'Тысячи молодых людей выстроились у призывных пунктов.',
     weight: (s) => (pct(s, 'nat') >= 20 ? 3 : 1),
     options: [
-      { label: 'Принять в армию', effects: () => [up('+12 армии'), down('+3% националистам')], apply: (s) => { s.army += 12; shiftParty(s.parties[s.player], 'nat', 3); } },
+      { label: 'Принять в армию', effects: () => [up('+12 армии'), down('+3% националистам')], apply: (s) => { reinforce(s, s.player, 12); shiftParty(s.parties[s.player], 'nat', 3); } },
       { label: 'Отправить на стройки', effects: (s) => [up(`+${inc(s)} денег`)], apply: (s) => { s.money += inc(s); } },
     ],
   },
@@ -132,8 +133,8 @@ export const EVENTS: GameEvent[] = [
     text: () => 'Молодой офицер предлагает смелую реформу тактики.',
     weight: () => 1.5,
     options: [
-      { label: 'Дать ему армию', effects: () => [up('+8% к атаке навсегда')], apply: (s) => { s.bonus.attackMul += 0.08; } },
-      { label: 'Поручить оборону', effects: () => [up('+12% к обороне навсегда')], apply: (s) => { s.bonus.defenseMul += 0.12; } },
+      { label: 'Дать ему армию', effects: () => [up('+8% к атаке навсегда')], apply: (s) => { s.nb[s.player].attackMul += 0.08; } },
+      { label: 'Поручить оборону', effects: () => [up('+12% к обороне навсегда')], apply: (s) => { s.nb[s.player].defenseMul += 0.12; } },
     ],
   },
   {
@@ -151,7 +152,7 @@ export const EVENTS: GameEvent[] = [
     weight: (s) => (isWinter(s.turn) ? 4 : 0),
     options: [
       { label: 'Закупить уголь', effects: (s) => [down(`−${Math.round(inc(s) * 0.7)} денег`)], apply: (s) => pay(s, Math.round(inc(s) * 0.7)) },
-      { label: 'Солдаты потерпят', effects: () => [down('−10% армии'), down('−4 стабильности')], apply: (s) => { s.army = Math.round(s.army * 0.9); stab(s, -4); } },
+      { label: 'Солдаты потерпят', effects: () => [down('−10% армии'), down('−4 стабильности')], apply: (s) => { scaleArmies(s, s.player, 0.9); stab(s, -4); } },
     ],
   },
   {
@@ -159,7 +160,7 @@ export const EVENTS: GameEvent[] = [
     text: () => 'Отряд опытных наёмников предлагает свои услуги. Недёшево.',
     weight: (s) => (s.turn > 3 ? 2 : 0),
     options: [
-      { label: 'Нанять', effects: () => [up('+25 армии'), down('−220 денег')], apply: (s) => { pay(s, 220); s.army += 25; } },
+      { label: 'Нанять', effects: () => [up('+25 армии'), down('−220 денег')], apply: (s) => { pay(s, 220); reinforce(s, s.player, 25); } },
       { label: 'Отказать', effects: () => [], apply: () => {} },
     ],
   },
@@ -193,7 +194,7 @@ export const EVENTS: GameEvent[] = [
     weight: (s) => (pct(s, 'nat') >= 22 && s.ruling[s.player] !== 'nat' ? 3 : 0),
     options: [
       { label: 'Запретить марши', effects: () => [down('−5 стабильности'), up('+4% демократам')], apply: (s) => { stab(s, -5); shiftParty(s.parties[s.player], 'dem', 4); } },
-      { label: 'Поддержать', effects: () => [up('+8 армии'), down('+6% националистам')], apply: (s) => { s.army += 8; shiftParty(s.parties[s.player], 'nat', 6); } },
+      { label: 'Поддержать', effects: () => [up('+8 армии'), down('+6% националистам')], apply: (s) => { reinforce(s, s.player, 8); shiftParty(s.parties[s.player], 'nat', 6); } },
     ],
   },
   {
@@ -272,13 +273,10 @@ function foreignEvent(s: GameState) {
     s.ruling[n] = next;
     log(s, `Переворот: ${who}. К власти пришли ${PARTIES[next].name.toLowerCase()}`, 'info');
   } else if (roll < 0.6) {
-    s.ai[n].army = Math.round(s.ai[n].army * 0.8);
-    log(s, `Эпидемия: ${who}. Армия страны ослабла`, 'info');
+    scaleArmies(s, n, 0.8);
   } else if (roll < 0.8) {
     s.ai[n].money += COUNTRY[n].eco * 3;
-    log(s, `${who} находит нефть и богатеет`, 'info');
   } else {
-    s.ai[n].army += 10;
-    log(s, `Мобилизация: ${who} усиливает армию`, 'info');
+    reinforce(s, n, 10);
   }
 }

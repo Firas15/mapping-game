@@ -7,10 +7,20 @@ import type { Topology, GeometryCollection } from 'topojson-specification';
 import type { Feature, MultiPolygon, Polygon } from 'geojson';
 import { COUNTRY, flagUrl } from '../data/countries';
 import { CAPITAL, REGION } from '../data/regions';
+import { SEA, SEAS } from '../data/seas';
+import type { Unit } from '../game/state';
 
 const SHORT: Record<string, string> = { BA: 'Босния', MK: 'Македония', GB: 'Британия' };
 
 type RegionFeature = Feature<MultiPolygon | Polygon, Record<string, unknown>> & { id: string };
+
+/** What the selected unit can do, drawn as markers on the map. */
+export interface Orders {
+  moves: string[];
+  attacks: { r: string; ch: number; war: boolean }[];
+  strikes: string[];
+  zones: string[];
+}
 
 export interface MapState {
   /** region -> owner country */
@@ -18,33 +28,47 @@ export interface MapState {
   player: string | null;
   /** regions outlined as selected */
   selected: string[];
-  /** regions the player can attack right now */
-  targets: Set<string>;
-  /** countries allied with the player */
   allies?: Set<string>;
-  /** occupied capitals: country -> turns held */
-  capHold?: Record<string, { by: string; turns: number }>;
-  capitulateAfter?: number;
+  /** current capital of each country */
+  capitals?: Record<string, string | null>;
+  units?: Unit[];
+  selectedUnit?: number | null;
+  orders?: Orders | null;
+  /** map-mode colours, region -> colour; political colours when absent */
+  fill?: Record<string, string> | null;
 }
+
+export interface MapEvents {
+  region: (id: string | null) => void;
+  unit: (id: number) => void;
+  zone: (id: string) => void;
+}
+
+const UNIT_ICON: Record<string, string> = {
+  // infantry: the crossed box of a military map symbol
+  army: 'M-5,-3.5 h10 v7 h-10 Z M-5,-3.5 L5,3.5 M5,-3.5 L-5,3.5',
+  air: 'M0,-6 L1.3,-1.5 L6,1 L6,2.4 L1.3,1.2 L1,4.2 L2.6,5.4 L2.6,6.3 L0,5.6 L-2.6,6.3 L-2.6,5.4 L-1,4.2 L-1.3,1.2 L-6,2.4 L-6,1 L-1.3,-1.5 Z',
+  fleet: 'M-7,1 L7,1 L5,4.5 L-5,4.5 Z M-1,-5 L-1,1 M-1,-5 L4,-1 L-1,-1',
+};
 
 export class MapView {
   readonly el: SVGSVGElement;
   private host: HTMLElement;
-  private onSelect: (region: string | null) => void;
+  private on: MapEvents;
   private topo: Topology<{ land: GeometryCollection }>;
   private regions: RegionFeature[] = [];
   private context: RegionFeature[] = [];
   private byId = new Map<string, RegionFeature>();
   /** label point of each region, lon/lat */
   private anchorLL = new Map<string, [number, number]>();
-  private seaLinks: [string, string][] = [];
+  private seaLinks: { a: string; b: string; zone: string }[] = [];
   private proj: GeoProjection = geoConicConformal();
   private path: GeoPath = geoPath(this.proj);
   private zoomer: ZoomBehavior<SVGSVGElement, unknown>;
   private t: ZoomTransform = zoomIdentity;
   private w = 0;
   private h = 0;
-  private state: MapState = { owner: {}, player: null, selected: [], targets: new Set() };
+  private state: MapState = { owner: {}, player: null, selected: [] };
 
   private root: Selection<SVGGElement, unknown, null, undefined>;
   private gGrid: Selection<SVGPathElement, unknown, null, undefined>;
@@ -52,18 +76,20 @@ export class MapView {
   private gRegions: Selection<SVGGElement, unknown, null, undefined>;
   private gTargets: Selection<SVGGElement, unknown, null, undefined>;
   private gNations: Selection<SVGGElement, unknown, null, undefined>;
+  private gSeaNames: Selection<SVGGElement, unknown, null, undefined>;
   private gSea: Selection<SVGGElement, unknown, null, undefined>;
   private pBorder: Selection<SVGPathElement, unknown, null, undefined>;
   private pBorderHalo: Selection<SVGPathElement, unknown, null, undefined>;
   private pSelected: Selection<SVGPathElement, unknown, null, undefined>;
   private gCapitals: Selection<SVGGElement, unknown, null, undefined>;
-  private gYields: Selection<SVGGElement, unknown, null, undefined>;
   private gLabels: Selection<SVGGElement, unknown, null, undefined>;
+  private gOrders: Selection<SVGGElement, unknown, null, undefined>;
+  private gUnits: Selection<SVGGElement, unknown, null, undefined>;
   private gFx: Selection<SVGGElement, unknown, null, undefined>;
 
-  constructor(host: HTMLElement, topo: unknown, onSelect: (region: string | null) => void) {
+  constructor(host: HTMLElement, topo: unknown, on: MapEvents) {
     this.host = host;
-    this.onSelect = onSelect;
+    this.on = on;
     this.topo = topo as Topology<{ land: GeometryCollection }>;
     const fc = feature(this.topo, this.topo.objects.land) as unknown as { features: RegionFeature[] };
     for (const f of fc.features) {
@@ -79,14 +105,16 @@ export class MapView {
     host.append(this.el);
     const svg = select(this.el);
 
-    const pat = svg.append('defs').append('pattern').attr('id', 'hatch').attr('patternUnits', 'userSpaceOnUse')
+    const defs = svg.append('defs');
+    const pat = defs.append('pattern').attr('id', 'hatch').attr('patternUnits', 'userSpaceOnUse')
       .attr('width', 7).attr('height', 7).attr('patternTransform', 'rotate(45)');
     pat.append('rect').attr('width', 2.2).attr('height', 7).attr('fill', 'rgba(255,255,255,0.32)');
 
     svg.append('rect').attr('class', 'sea').attr('width', '100%').attr('height', '100%')
-      .on('click', () => this.onSelect(null));
+      .on('click', () => this.on.region(null));
     this.root = svg.append('g');
     this.gGrid = this.root.append('path').attr('class', 'graticule');
+    this.gSeaNames = this.root.append('g').attr('class', 'sea-names');
     this.gContext = this.root.append('g').attr('class', 'context');
     this.gRegions = this.root.append('g').attr('class', 'countries');
     this.gTargets = this.root.append('g').attr('class', 'targets');
@@ -95,9 +123,10 @@ export class MapView {
     this.pBorderHalo = this.root.append('path').attr('class', 'player-halo');
     this.pBorder = this.root.append('path').attr('class', 'player-border');
     this.pSelected = this.root.append('path').attr('class', 'selected');
-    this.gYields = this.root.append('g').attr('class', 'yields');
     this.gCapitals = this.root.append('g').attr('class', 'capitals');
     this.gLabels = this.root.append('g').attr('class', 'labels');
+    this.gOrders = this.root.append('g').attr('class', 'orders');
+    this.gUnits = this.root.append('g').attr('class', 'units');
     this.gFx = this.root.append('g').attr('class', 'fx');
 
     this.zoomer = zoom<SVGSVGElement, unknown>()
@@ -132,8 +161,8 @@ export class MapView {
 
   centroid = (id: string): [number, number] => this.anchorLL.get(id)!;
 
-  setSeaLinks(pairs: [string, string][]) {
-    this.seaLinks = pairs;
+  setSeaLinks(links: { a: string; b: string; zone: string }[]) {
+    this.seaLinks = links;
     this.drawSeaLinks();
   }
 
@@ -142,7 +171,6 @@ export class MapView {
     if (!r.width || !r.height) return;
     this.w = r.width;
     this.h = r.height;
-    // all of playable Europe fits at zoom 1
     this.proj = geoConicConformal().parallels([43, 62]).rotate([-15, 0]).fitExtent(
       [[20, 20], [this.w - 20, this.h - 20]],
       { type: 'MultiPoint', coordinates: [[-24, 36], [58, 38], [-24, 66], [58, 66], [20, 71.5], [20, 34]] },
@@ -154,48 +182,27 @@ export class MapView {
     this.gRegions.selectAll<SVGPathElement, RegionFeature>('path').data(this.regions, (f) => f.id)
       .join('path')
       .attr('d', (f) => this.path(f))
-      .on('click', (e: MouseEvent, f) => { e.stopPropagation(); this.onSelect(f.id); });
+      .on('click', (e: MouseEvent, f) => { e.stopPropagation(); this.on.region(f.id); });
+    this.gSeaNames.selectAll<SVGGElement, (typeof SEAS)[number]>('g').data(SEAS.filter((z) => z.id !== 'CASP'), (z) => z.id)
+      .join((enter) => {
+        const g = enter.append('g').attr('class', 'sea-name');
+        g.append('text').attr('text-anchor', 'middle').attr('dy', 26).text((z) => z.name);
+        return g;
+      })
+      .attr('data-x', (z) => this.proj(z.center)![0])
+      .attr('data-y', (z) => this.proj(z.center)![1]);
     this.drawSeaLinks();
-    this.drawYields();
     this.update(this.state);
   }
 
-  /** What each region gives: gold coin for money, red chevron for soldiers. */
-  private drawYields() {
-    const g = this.gYields.selectAll<SVGGElement, RegionFeature>('g.yield').data(this.regions, (f) => f.id)
-      .join((enter) => {
-        const e = enter.append('g').attr('class', 'yield');
-        e.each(function (f) {
-          const r = REGION[f.id];
-          const icons: string[] = [];
-          if (r.kind !== 'manpower') icons.push('money');
-          if (r.men > 0) icons.push('men');
-          const sel = select(this);
-          icons.forEach((kind, i) => {
-            const x = (i - (icons.length - 1) / 2) * 13;
-            const ic = sel.append('g').attr('class', `y-${kind}`).attr('transform', `translate(${x},0)`);
-            ic.append('circle').attr('r', 5.5);
-            if (kind === 'money') ic.append('circle').attr('class', 'inner').attr('r', 2.6);
-            else ic.append('path').attr('d', 'M-3,-0.5 L0,-3 L3,-0.5 M-3,2.5 L0,0 L3,2.5');
-          });
-          sel.append('title').text(`${r.name}: ${r.eco} денег и ${r.men} солдат за ход`);
-        });
-        return e;
-      });
-    g.each((f, i, nodes) => {
-      const [x, y] = this.xy(f.id);
-      nodes[i].dataset.x = String(x);
-      nodes[i].dataset.y = String(y);
-    });
-  }
-
-  private xy(id: string) {
-    return this.proj(this.anchorLL.get(id)!) as [number, number];
+  private xy(id: string): [number, number] {
+    const z = SEA[id];
+    return this.proj(z ? z.center : this.anchorLL.get(id)!) as [number, number];
   }
 
   private drawSeaLinks() {
     if (!this.w) return;
-    this.gSea.selectAll('path').data(this.seaLinks).join('path').attr('d', ([a, b]) => {
+    this.gSea.selectAll('path').data(this.seaLinks).join('path').attr('d', ({ a, b }) => {
       const p = this.xy(a);
       const q = this.xy(b);
       const mx = (p[0] + q[0]) / 2;
@@ -209,13 +216,14 @@ export class MapView {
   update(s: MapState) {
     this.state = s;
     if (!this.w) return;
-    const col = (id: string) => COUNTRY[s.owner[id] ?? REGION[id].c]?.color ?? '#555';
+    const col = (id: string) => s.fill?.[id] ?? COUNTRY[s.owner[id] ?? REGION[id].c]?.color ?? '#555';
     this.gRegions.selectAll<SVGPathElement, RegionFeature>('path')
       .attr('fill', (f) => col(f.id))
-      .classed('ally', (f) => !!s.allies?.has(s.owner[f.id]));
+      .classed('ally', (f) => !s.fill && !!s.allies?.has(s.owner[f.id]));
 
+    const attackSet = new Set((s.orders?.attacks ?? []).map((a) => a.r));
     this.gTargets.selectAll<SVGPathElement, RegionFeature>('path')
-      .data(this.regions.filter((f) => s.targets.has(f.id)), (f) => f.id)
+      .data(this.regions.filter((f) => attackSet.has(f.id)), (f) => f.id)
       .join('path').attr('d', (f) => this.path(f));
 
     // thick borders between owners
@@ -228,9 +236,6 @@ export class MapView {
     this.gNations.selectAll<SVGPathElement, { n: string; d: string }>('path').data(shapes, (x) => x.n)
       .join('path').attr('d', (x) => x.d);
 
-    this.gSea.selectAll<SVGPathElement, [string, string]>('path').classed('active', ([a, b]) =>
-      !!s.player && ((s.owner[a] === s.player && s.targets.has(b)) || (s.owner[b] === s.player && s.targets.has(a))));
-
     const mine = s.player ? shapes.find((x) => x.n === s.player)?.d ?? null : null;
     this.pBorder.attr('d', mine);
     this.pBorderHalo.attr('d', mine);
@@ -241,35 +246,34 @@ export class MapView {
 
     this.drawCapitals();
     this.drawLabels();
+    this.drawOrders();
+    this.drawUnits();
   }
 
-  /** Red star on every capital; occupied ones show turns left before surrender. */
+  /** Red star on every capital; a moved government gets a hollow one. */
   private drawCapitals() {
     const s = this.state;
     const alive = new Set(Object.values(s.owner));
-    const caps = Object.entries(CAPITAL).filter(([c]) => alive.has(c));
+    const caps = Object.entries(s.capitals ?? CAPITAL).filter((e): e is [string, string] => !!e[1] && alive.has(e[0]) && s.owner[e[1]] === e[0]);
     const g = this.gCapitals.selectAll<SVGGElement, [string, string]>('g.cap').data(caps, (d) => d[0])
       .join((enter) => {
         const e = enter.append('g').attr('class', 'cap');
         e.append('circle').attr('r', 6.5);
         e.append('path').attr('d', starPath(4.2));
-        e.append('text').attr('class', 'cap-left').attr('x', 9).attr('y', -5);
         e.append('title');
         return e;
       });
     g.each((d, i, nodes) => {
       const [c, region] = d;
       const node = nodes[i];
-      const pt = this.proj(REGION[region].point ?? this.anchorLL.get(region)!) as [number, number];
+      const original = CAPITAL[c] === region;
+      const pt = this.proj(original && REGION[region].point ? REGION[region].point! : this.anchorLL.get(region)!) as [number, number];
       node.dataset.x = String(pt[0]);
       node.dataset.y = String(pt[1]);
-      const hold = s.owner[region] !== c ? s.capHold?.[c] : undefined;
-      const left = hold ? (s.capitulateAfter ?? 3) - hold.turns : null;
-      node.classList.toggle('occupied', left !== null);
-      node.querySelector('text')!.textContent = left !== null ? String(left) : '';
-      node.querySelector('title')!.textContent = left !== null
-        ? `Столица страны ${COUNTRY[c].name} занята. Капитуляция через ${left} ход.`
-        : `Столица страны ${COUNTRY[c].name}`;
+      node.classList.toggle('temp', !original);
+      node.querySelector('title')!.textContent = original
+        ? `Столица: ${COUNTRY[c].name}`
+        : `Временная столица: ${COUNTRY[c].name}`;
     });
     this.placeOverlays();
   }
@@ -306,22 +310,128 @@ export class MapView {
     this.placeOverlays();
   }
 
-  /** Overlays keep their screen size; labels hide where they don't fit. */
-  private placeOverlays() {
-    const k = this.t.k;
-    // yields only when zoomed in enough to read them
-    const showYields = k >= 2.2;
-    this.gYields.style('display', showYields ? 'inline' : 'none');
-    if (showYields) {
-      this.gYields.selectAll<SVGGElement, unknown>('g.yield').each((_, i, nodes) => {
-        const n = nodes[i];
-        n.setAttribute('transform', `translate(${n.dataset.x},${Number(n.dataset.y) - 6 / k}) scale(${1 / k})`);
+  /** Where the selected unit can go: green dots to move, % badges to attack, crosshairs to bomb. */
+  private drawOrders() {
+    const o = this.state.orders;
+    type Mark = { key: string; at: string; kind: 'move' | 'attack' | 'strike' | 'zone'; ch?: number; war?: boolean };
+    const marks: Mark[] = !o ? [] : [
+      ...o.moves.map((r) => ({ key: 'm' + r, at: r, kind: 'move' as const })),
+      ...o.attacks.map((a) => ({ key: 'a' + a.r, at: a.r, kind: 'attack' as const, ch: a.ch, war: a.war })),
+      ...o.strikes.map((r) => ({ key: 's' + r, at: r, kind: 'strike' as const })),
+      ...o.zones.map((z) => ({ key: 'z' + z, at: z, kind: 'zone' as const })),
+    ];
+    const g = this.gOrders.selectAll<SVGGElement, Mark>('g.order').data(marks, (m) => m.key)
+      .join((enter) => {
+        const e = enter.append('g').attr('class', (m) => `order ${m.kind}`)
+          .on('click', (ev: MouseEvent, m) => {
+            ev.stopPropagation();
+            if (SEA[m.at]) this.on.zone(m.at); else this.on.region(m.at);
+          });
+        e.each(function (m) {
+          const sel = select(this);
+          if (m.kind === 'move') {
+            sel.append('circle').attr('r', 9);
+            sel.append('path').attr('d', 'M-3,-4 L2,0 L-3,4');
+          } else if (m.kind === 'attack') {
+            sel.append('rect').attr('x', -19).attr('y', -10).attr('width', 38).attr('height', 20).attr('rx', 10);
+            sel.append('text').attr('text-anchor', 'middle').attr('dy', '0.35em');
+          } else if (m.kind === 'strike') {
+            sel.append('circle').attr('r', 10);
+            sel.append('path').attr('d', 'M-6,0 H-2 M2,0 H6 M0,-6 V-2 M0,2 V6');
+            sel.append('circle').attr('class', 'dot').attr('r', 1.6);
+          } else {
+            sel.append('circle').attr('r', 16);
+            sel.append('path').attr('d', 'M-3,-4 L2,0 L-3,4');
+          }
+        });
+        return e;
       });
-    }
-    this.gCapitals.selectAll<SVGGElement, unknown>('g.cap').each((_, i, nodes) => {
+    g.each((m, i, nodes) => {
       const n = nodes[i];
-      n.setAttribute('transform', `translate(${n.dataset.x},${n.dataset.y}) scale(${1 / k})`);
+      const [x, y] = this.xy(m.at);
+      n.dataset.x = String(x);
+      n.dataset.y = String(y);
+      if (m.kind === 'attack') {
+        const tone = m.ch! >= 65 ? 'good' : m.ch! >= 40 ? 'mid' : 'bad';
+        n.setAttribute('class', `order attack ${tone}${m.war ? '' : ' peace'}`);
+        n.querySelector('text')!.textContent = `${m.ch}%`;
+      }
     });
+    this.placeOverlays();
+  }
+
+  /** Counters for armies and air wings at their region, fleets at their sea. */
+  private drawUnits() {
+    const s = this.state;
+    const units = s.units ?? [];
+    // spread several counters standing in one place side by side
+    const slot = new Map<number, { dx: number; dy: number }>();
+    const groups = new Map<string, Unit[]>();
+    for (const u of units) {
+      const key = u.at;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(u);
+    }
+    for (const [at, list] of groups) {
+      list.sort((a, b) => Number(b.owner === s.player) - Number(a.owner === s.player) || a.type.localeCompare(b.type) || a.id - b.id);
+      const w = 38;
+      list.forEach((u, i) => slot.set(u.id, { dx: (i - (list.length - 1) / 2) * w, dy: SEA[at] ? 0 : -22 }));
+    }
+
+    const g = this.gUnits.selectAll<SVGGElement, Unit>('g.unit').data(units, (u) => String(u.id))
+      .join((enter) => {
+        const e = enter.append('g').attr('class', 'unit')
+          .on('click', (ev: MouseEvent, u) => { ev.stopPropagation(); this.on.unit(u.id); });
+        const body = e.append('g').attr('class', 'body');
+        body.append('rect').attr('class', 'halo').attr('x', -20).attr('y', -12).attr('width', 40).attr('height', 24).attr('rx', 7);
+        body.append('rect').attr('class', 'plate').attr('x', -17).attr('y', -10).attr('width', 34).attr('height', 20).attr('rx', 5);
+        body.append('path').attr('class', 'glyph').attr('transform', 'translate(-8,0)');
+        body.append('text').attr('class', 'num').attr('x', 6).attr('dy', '0.36em').attr('text-anchor', 'middle');
+        return e;
+      });
+    g.each((u, i, nodes) => {
+      const n = nodes[i];
+      const [x, y] = this.xy(u.at);
+      const sl = slot.get(u.id)!;
+      n.dataset.x = String(x);
+      n.dataset.y = String(y);
+      n.dataset.dx = String(sl.dx);
+      n.dataset.dy = String(sl.dy);
+      n.setAttribute('class', `unit ${u.type}${u.owner === s.player ? ' mine' : ''}${u.acted ? ' acted' : ''}${s.selectedUnit === u.id ? ' sel' : ''}`);
+      const plate = n.querySelector<SVGRectElement>('.plate')!;
+      plate.style.fill = COUNTRY[u.owner]?.color ?? '#666';
+      n.querySelector('.glyph')!.setAttribute('d', UNIT_ICON[u.type]);
+      n.querySelector('.num')!.textContent = String(u.str);
+      let title = n.querySelector<SVGTitleElement>('title');
+      if (!title) { title = document.createElementNS('http://www.w3.org/2000/svg', 'title'); n.append(title); }
+      title.textContent = `${COUNTRY[u.owner].name}: ${{ army: 'армия', fleet: 'флот', air: 'авиакрыло' }[u.type]}, сила ${u.str}`;
+    });
+    this.placeOverlays(true);
+  }
+
+  /** Overlays keep their screen size; labels hide where they don't fit. */
+  private placeOverlays(animateUnits = false) {
+    const k = this.t.k;
+    const place = (sel: Selection<SVGGElement, unknown, SVGGElement, unknown>, dy = 0) =>
+      sel.each((_, i, nodes) => {
+        const n = nodes[i];
+        n.setAttribute('transform', `translate(${n.dataset.x},${Number(n.dataset.y) + dy / k}) scale(${1 / k})`);
+      });
+    place(this.gCapitals.selectAll<SVGGElement, unknown>('g.cap'));
+    place(this.gOrders.selectAll<SVGGElement, unknown>('g.order'));
+    place(this.gSeaNames.selectAll<SVGGElement, unknown>('g.sea-name'));
+    this.gSeaNames.style('display', k >= 1.7 ? 'inline' : 'none');
+
+    const units = this.gUnits.selectAll<SVGGElement, Unit>('g.unit');
+    units.each((_, i, nodes) => {
+      const n = nodes[i];
+      const tf = `translate(${Number(n.dataset.x) + Number(n.dataset.dx) / k},${Number(n.dataset.y) + Number(n.dataset.dy) / k}) scale(${1 / k})`;
+      if (animateUnits && n.getAttribute('transform')) select(n).transition().duration(450).attr('transform', tf);
+      else n.setAttribute('transform', tf);
+    });
+    // far away, only the player's own counters are shown
+    this.gUnits.classed('far', k < 1.9);
+
     this.gLabels.selectAll<SVGGElement, { n: string; region: string }>('g').each((d, i, nodes) => {
       const node = nodes[i] as SVGGElement & { _w?: number };
       const f = this.byId.get(d.region)!;
@@ -384,6 +494,33 @@ export class MapView {
     select(this.el).transition().duration(250).call(this.zoomer.scaleBy, f);
   }
 
+  /** A short arrow and blast for the player's own attacks and air strikes. */
+  async playStrike(from: string, to: string, color: string, kind: 'attack' | 'air') {
+    if (!this.w) return;
+    const k = this.t.k;
+    const p = this.xy(from);
+    const q = this.xy(to);
+    const c: [number, number] = [(p[0] + q[0]) / 2 - (q[1] - p[1]) * 0.2, (p[1] + q[1]) / 2 + (q[0] - p[0]) * 0.2];
+    const g = this.gFx.append('g');
+    const d = `M${p[0]},${p[1]} Q${c[0]},${c[1]} ${q[0]},${q[1]}`;
+    const outline = g.append('path').attr('class', 'fx-arrow').attr('d', d).attr('stroke', '#0b1424').attr('stroke-width', 8 / k);
+    const arrow = g.append('path').attr('class', `fx-arrow${kind === 'air' ? ' air' : ''}`).attr('d', d).attr('stroke', color).attr('stroke-width', 4.5 / k);
+    const len = arrow.node()!.getTotalLength();
+    for (const line of [outline, arrow]) {
+      line.attr('stroke-dasharray', kind === 'air' ? `${6 / k} ${5 / k}` : `${len} ${len}`)
+        .attr('stroke-dashoffset', kind === 'air' ? 0 : len)
+        .transition().duration(380).attr('stroke-dashoffset', 0);
+    }
+    await new Promise((r) => setTimeout(r, 380));
+    for (let i = 0; i < 2; i++) {
+      g.append('circle').attr('class', 'fx-blast').attr('cx', q[0]).attr('cy', q[1]).attr('r', 0)
+        .attr('stroke', i ? '#fff' : color).attr('stroke-width', 3 / k)
+        .transition().delay(i * 120).duration(520).attr('r', 34 / k).style('opacity', 0);
+    }
+    await new Promise((r) => setTimeout(r, 450));
+    g.transition().duration(250).style('opacity', 0).remove();
+  }
+
   /**
    * Shows an enemy taking a region: the camera flies in, an arrow in the
    * attacker's colour runs from `from` to `to`, a blast hits the region and
@@ -394,7 +531,6 @@ export class MapView {
     pads: { padRight?: number; padBottom?: number } = {},
   ) {
     if (!this.byId.has(to)) return onCapture();
-    // frame the target and the point the arrow starts from, not the attacker's whole region
     this.focus([to], { ...pads, duration: 700 }, this.byId.has(from) ? [this.xy(from)] : []);
     await wait(750, skip);
     if (skip.skipped) return onCapture();
@@ -404,8 +540,6 @@ export class MapView {
     const q = this.xy(to);
     const c: [number, number] = [(p[0] + q[0]) / 2 - (q[1] - p[1]) * 0.2, (p[1] + q[1]) / 2 + (q[0] - p[0]) * 0.2];
     const g = this.gFx.append('g');
-
-    // dark outline under the coloured arrow so it reads on any country
     const d = `M${p[0]},${p[1]} Q${c[0]},${c[1]} ${q[0]},${q[1]}`;
     const outline = g.append('path').attr('class', 'fx-arrow').attr('d', d).attr('stroke', '#0b1424').attr('stroke-width', 9 / k);
     const arrow = g.append('path').attr('class', 'fx-arrow').attr('d', d).attr('stroke', color).attr('stroke-width', 5 / k);
@@ -414,10 +548,9 @@ export class MapView {
       line.attr('stroke-dasharray', `${len} ${len}`).attr('stroke-dashoffset', len)
         .transition().duration(700).attr('stroke-dashoffset', 0);
     }
-    // arrow head, pointing along the end of the curve
     const a = Math.atan2(q[1] - c[1], q[0] - c[0]);
-    const s = 14 / k;
-    const head = [[q[0], q[1]], [q[0] - Math.cos(a - 0.45) * s, q[1] - Math.sin(a - 0.45) * s], [q[0] - Math.cos(a + 0.45) * s, q[1] - Math.sin(a + 0.45) * s]];
+    const sz = 14 / k;
+    const head = [[q[0], q[1]], [q[0] - Math.cos(a - 0.45) * sz, q[1] - Math.sin(a - 0.45) * sz], [q[0] - Math.cos(a + 0.45) * sz, q[1] - Math.sin(a + 0.45) * sz]];
     g.append('path').attr('class', 'fx-head').attr('d', `M${head.join('L')}Z`).attr('fill', color)
       .attr('stroke-width', 1.5 / k).style('opacity', 0)
       .transition().delay(620).duration(120).style('opacity', 1);
