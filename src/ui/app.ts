@@ -848,11 +848,16 @@ export class App {
           ${s.played === id ? '<span class="card-badge">Принято</span>' : blocked && !s.played ? `<span class="card-why">${blocked}</span>` : ''}
         </button>`;
     }).join('');
-    const idle = unitsOf(s, s.player).filter((u) => !u.acted && (u.type !== 'army' || neighbours(u.at).some((r) => atWar(s, s.player, s.owner[r])))).length;
+    const idle = this.idleUnits().length;
     $('#decisions').innerHTML = `
       <div class="cards">${cards}</div>
-      <button class="btn primary end" id="end-turn">
-        <span>Конец хода</span><small>${signed(netIncome(s))} денег${idle ? ` · ${idle} без приказа` : ''}</small></button>`;
+      <div class="end-col">
+        <button class="btn next-unit" id="next-unit" ${idle ? '' : 'data-off="Все отряды получили приказ"'}>
+          ${icon('next', 15)}<span>Следующий отряд</span><b>${idle}</b></button>
+        <button class="btn primary end" id="end-turn">
+          <span>Конец хода</span><small>${signed(netIncome(s))} денег</small></button>
+      </div>`;
+    $('#next-unit').onclick = () => (idle ? this.nextUnit() : this.toast('Все отряды получили приказ', 'info'));
     $('#decisions').querySelectorAll<HTMLButtonElement>('[data-card]').forEach((b) => {
       b.onclick = () => {
         const id = b.dataset.card!;
@@ -865,6 +870,26 @@ export class App {
       };
     });
     $('#end-turn').onclick = () => void this.endTurn();
+  }
+
+  /** The player's units that still have an order to give this turn. */
+  private idleUnits() {
+    const s = this.s!;
+    return unitsOf(s, s.player).filter((u) => !u.acted).sort((a, b) =>
+      ['army', 'air', 'fleet'].indexOf(a.type) - ['army', 'air', 'fleet'].indexOf(b.type) || a.id - b.id);
+  }
+
+  /** Selects the next unit without an order and brings the camera to it. */
+  private nextUnit() {
+    const list = this.idleUnits();
+    if (!list.length) return;
+    const i = list.findIndex((u) => u.id === this.unitSel);
+    const u = list[(i + 1) % list.length];
+    this.onUnit(u.id);
+    if (this.unitSel !== u.id) this.onUnit(u.id);
+    const s = this.s!;
+    const where = SEA[u.at] ? REGIONS.filter((r) => r.coast.includes(u.at) && s.owner[r.id] === s.player).map((r) => r.id) : [u.at];
+    if (where.length) this.map.focus(where.slice(0, 1), { ...this.pads(), duration: 450 });
   }
 
   private async endTurn() {
