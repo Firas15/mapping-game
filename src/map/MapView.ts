@@ -59,6 +59,7 @@ export class MapView {
   private gCapitals: Selection<SVGGElement, unknown, null, undefined>;
   private gYields: Selection<SVGGElement, unknown, null, undefined>;
   private gLabels: Selection<SVGGElement, unknown, null, undefined>;
+  private gFx: Selection<SVGGElement, unknown, null, undefined>;
 
   constructor(host: HTMLElement, topo: unknown, onSelect: (region: string | null) => void) {
     this.host = host;
@@ -97,6 +98,7 @@ export class MapView {
     this.gYields = this.root.append('g').attr('class', 'yields');
     this.gCapitals = this.root.append('g').attr('class', 'capitals');
     this.gLabels = this.root.append('g').attr('class', 'labels');
+    this.gFx = this.root.append('g').attr('class', 'fx');
 
     this.zoomer = zoom<SVGSVGElement, unknown>()
       .scaleExtent([1, 16])
@@ -332,10 +334,14 @@ export class MapView {
   }
 
   /** Zoom so the given regions sit comfortably in view. */
-  focus(ids: string[], opts: { duration?: number; padRight?: number; padBottom?: number; padLeft?: number } = {}) {
+  focus(
+    ids: string[],
+    opts: { duration?: number; padRight?: number; padBottom?: number; padLeft?: number } = {},
+    points: [number, number][] = [],
+  ) {
     const fs = ids.map((id) => this.byId.get(id)).filter((f): f is RegionFeature => !!f);
     if (!fs.length || !this.w) return;
-    const bs = fs.map((f) => this.path.bounds(f));
+    const bs = [...fs.map((f) => this.path.bounds(f)), ...points.map((p) => [p, p] as [number, number][])];
     const x0 = Math.min(...bs.map((b) => b[0][0]));
     const y0 = Math.min(...bs.map((b) => b[0][1]));
     const x1 = Math.max(...bs.map((b) => b[1][0]));
@@ -377,6 +383,69 @@ export class MapView {
   zoomBy(f: number) {
     select(this.el).transition().duration(250).call(this.zoomer.scaleBy, f);
   }
+
+  /**
+   * Shows an enemy taking a region: the camera flies in, an arrow in the
+   * attacker's colour runs from `from` to `to`, a blast hits the region and
+   * `onCapture` repaints it. Resolves early once `skip.skipped` is set.
+   */
+  async playCapture(
+    from: string, to: string, color: string, onCapture: () => void, skip: Skip,
+    pads: { padRight?: number; padBottom?: number } = {},
+  ) {
+    if (!this.byId.has(to)) return onCapture();
+    // frame the target and the point the arrow starts from, not the attacker's whole region
+    this.focus([to], { ...pads, duration: 700 }, this.byId.has(from) ? [this.xy(from)] : []);
+    await wait(750, skip);
+    if (skip.skipped) return onCapture();
+
+    const k = this.t.k;
+    const p = this.byId.has(from) ? this.xy(from) : this.xy(to);
+    const q = this.xy(to);
+    const c: [number, number] = [(p[0] + q[0]) / 2 - (q[1] - p[1]) * 0.2, (p[1] + q[1]) / 2 + (q[0] - p[0]) * 0.2];
+    const g = this.gFx.append('g');
+
+    // dark outline under the coloured arrow so it reads on any country
+    const d = `M${p[0]},${p[1]} Q${c[0]},${c[1]} ${q[0]},${q[1]}`;
+    const outline = g.append('path').attr('class', 'fx-arrow').attr('d', d).attr('stroke', '#0b1424').attr('stroke-width', 9 / k);
+    const arrow = g.append('path').attr('class', 'fx-arrow').attr('d', d).attr('stroke', color).attr('stroke-width', 5 / k);
+    const len = arrow.node()!.getTotalLength();
+    for (const line of [outline, arrow]) {
+      line.attr('stroke-dasharray', `${len} ${len}`).attr('stroke-dashoffset', len)
+        .transition().duration(700).attr('stroke-dashoffset', 0);
+    }
+    // arrow head, pointing along the end of the curve
+    const a = Math.atan2(q[1] - c[1], q[0] - c[0]);
+    const s = 14 / k;
+    const head = [[q[0], q[1]], [q[0] - Math.cos(a - 0.45) * s, q[1] - Math.sin(a - 0.45) * s], [q[0] - Math.cos(a + 0.45) * s, q[1] - Math.sin(a + 0.45) * s]];
+    g.append('path').attr('class', 'fx-head').attr('d', `M${head.join('L')}Z`).attr('fill', color)
+      .attr('stroke-width', 1.5 / k).style('opacity', 0)
+      .transition().delay(620).duration(120).style('opacity', 1);
+    await wait(760, skip);
+    if (skip.skipped) { g.remove(); return onCapture(); }
+
+    for (let i = 0; i < 3; i++) {
+      g.append('circle').attr('class', 'fx-blast').attr('cx', q[0]).attr('cy', q[1]).attr('r', 0)
+        .attr('stroke', i === 1 ? '#fff' : color).attr('stroke-width', 3 / k)
+        .transition().delay(i * 160).duration(750).attr('r', 48 / k).style('opacity', 0);
+    }
+    onCapture();
+    this.flash([to]);
+    await wait(1200, skip);
+    g.transition().duration(300).style('opacity', 0).remove();
+  }
+}
+
+export interface Skip { skipped: boolean }
+
+/** Timer that ends early when the player skips the cutscene. */
+function wait(ms: number, skip: Skip) {
+  return new Promise<void>((resolve) => {
+    const end = Date.now() + ms;
+    const id = setInterval(() => {
+      if (skip.skipped || Date.now() >= end) { clearInterval(id); resolve(); }
+    }, 40);
+  });
 }
 
 /** Centre of the biggest piece of a region, so islands don't pull labels into the sea. */

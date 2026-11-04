@@ -1,10 +1,10 @@
 import { COUNTRIES, COUNTRY, PARTIES, flagUrl, type CountryDef } from '../data/countries';
 import { TRAITS } from '../data/traits';
-import { buildGraph, seaPairs } from '../game/graph';
+import { buildGraph, land, sea, seaPairs } from '../game/graph';
 import { CAPITAL, KIND_INFO, REGION, REGIONS, regionTitle, regionsOf } from '../data/regions';
 import { CARD, drawHand, playCard } from '../game/cards';
 import {
-  type GameState, CAPITULATE_AFTER, PLAYER_SAFE_UNTIL, armyOf, clearSave, load, newGame, owned, ownedBy, save, season, trait,
+  type GameState, type WarEvent, CAPITULATE_AFTER, PLAYER_SAFE_UNTIL, armyOf, clearSave, load, newGame, owned, ownedBy, save, season, trait,
 } from '../game/state';
 import {
   RECRUIT_SIZE, annex, annexCost, attack, draft, draftCap, trophies, attackPower, canAnnexHere, chanceOf, defensePower, endTurn, front,
@@ -15,7 +15,7 @@ import {
   proposeAlliance, relation, relationLabel,
 } from '../game/diplomacy';
 import { BRANCHES, UPGRADES, buyUpgrade, hasUpgrade, upgradeBlocked } from '../game/upgrades';
-import { MapView } from '../map/MapView';
+import { MapView, type Skip } from '../map/MapView';
 import { icon } from './icons';
 import { politicsBlock } from './politics';
 import { EVENT, resolveEvent } from '../game/events';
@@ -43,6 +43,9 @@ export class App {
   private selected: string | null = null;
   private map: MapView;
   private tutorial = new Tutorial($('#tutorial'));
+  /** owners to draw instead of the real ones while a capture is being shown */
+  private ownerView: Record<string, string> | null = null;
+  private cinematic = false;
 
   constructor(topo: unknown) {
     this.map = new MapView($('#map-host'), topo, (c) => this.onSelect(c));
@@ -184,7 +187,7 @@ export class App {
   private updateMap() {
     const s = this.s;
     this.map.update({
-      owner: s ? s.owner : Object.fromEntries(REGIONS.map((r) => [r.id, r.c])),
+      owner: s ? this.ownerView ?? s.owner : Object.fromEntries(REGIONS.map((r) => [r.id, r.c])),
       player: s ? s.player : null,
       selected: s ? (this.selected ? [this.selected] : []) : this.picked ? regionIds(this.picked) : [],
       targets: this.targets(),
@@ -478,10 +481,23 @@ export class App {
         this.toast(`Решение принято: ${CARD[id].title}`, 'good');
       };
     });
-    $('#end-turn').onclick = () => {
-      let income = 0;
-      this.act(() => { income = endTurn(s); });
-      this.map.flash(s.events.filter((e) => e.won).map((e) => e.target));
+    $('#end-turn').onclick = async () => {
+      if (this.cinematic) return;
+      const before = { ...s.owner };
+      const income = endTurn(s);
+      save(s);
+      // regions the enemy took from us this turn are shown being taken, one by one
+      const captures = s.events.filter((e) => e.won && e.defender === s.player && before[e.target] === s.player);
+      if (captures.length) {
+        this.ownerView = { ...s.owner };
+        for (const e of captures) this.ownerView[e.target] = s.player;
+        this.renderHud();
+        this.renderDecisions();
+        this.updateMap();
+        await this.playCaptures(captures);
+      }
+      this.renderAll();
+      this.map.flash(s.events.filter((e) => e.won && !captures.includes(e)).map((e) => e.target));
       if (s.won || s.lost) return;
       this.toast(`Ход ${s.turn}, ${season(s.turn)}. Доход ${signed(income)}`, 'info');
       play('turn');
@@ -492,6 +508,53 @@ export class App {
       if (s.pendingEvent) this.showEvent(report);
       else report();
     };
+  }
+
+  /** Camera flies to each region the enemy took and shows the attack. */
+  private async playCaptures(captures: WarEvent[]) {
+    const skip: Skip = { skipped: false };
+    this.cinematic = true;
+    document.body.classList.add('cinematic');
+    const banner = $('#cine');
+    banner.className = 'open';
+    banner.innerHTML = `<div class="cine-text" id="cine-text"></div>
+      <button class="btn ghost" id="cine-skip">Пропустить</button>`;
+    $('#cine-skip').onclick = () => { skip.skipped = true; };
+    play('alarm');
+    const panel = $('#panel').getBoundingClientRect();
+    const pads = isMobile() ? { padBottom: panel.height } : { padRight: panel.width + 24 };
+
+    for (const e of captures.slice(0, 5)) {
+      if (skip.skipped) break;
+      const who = COUNTRY[e.attacker].name;
+      const where = regionTitle(e.target);
+      banner.classList.remove('lost');
+      $('#cine-text').innerHTML = `<img src="${flagUrl(e.attacker)}" alt="" class="flag-s">
+        <span>${who} наступает: <b>${where}</b></span>`;
+      await this.map.playCapture(this.originOf(e.attacker, e.target), e.target, COUNTRY[e.attacker].color, () => {
+        this.ownerView![e.target] = e.attacker;
+        this.updateMap();
+        play('loss');
+        banner.classList.add('lost');
+        $('#cine-text').innerHTML = `<img src="${flagUrl(e.attacker)}" alt="" class="flag-s">
+          <span><b>${where}</b> потеряна. Её занимает ${who}</span>`;
+      }, skip, pads);
+    }
+
+    this.ownerView = null;
+    banner.className = '';
+    banner.innerHTML = '';
+    document.body.classList.remove('cinematic');
+    this.cinematic = false;
+    this.updateMap();
+    this.focusHome();
+  }
+
+  /** A region next to the target that the map shows as the attacker's: the arrow starts there. */
+  private originOf(attacker: string, target: string): string {
+    const shown = this.ownerView ?? this.s!.owner;
+    const near = [...(land.get(target) ?? []), ...(sea.get(target) ?? [])];
+    return near.find((r) => shown[r] === attacker) ?? CAPITAL[attacker] ?? target;
   }
 
   /** A random event. The player has to pick an option to go on. */
