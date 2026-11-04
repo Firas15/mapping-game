@@ -36,6 +36,14 @@ export function incomeMul(s: GameState) {
 export const baseIncome = (s: GameState, nation: string) =>
   ownedBy(s, nation).reduce((sum, r) => sum + REGION[r].eco, 0) + (fx(nation).flatIncome ?? 0);
 
+/** Soldiers a nation's regions raise each turn. */
+export const draft = (s: GameState, nation: string) => ownedBy(s, nation).reduce((sum, r) => sum + REGION[r].men, 0);
+/** Conscription only tops the army up to this size (starting army + 8 turns of it); past it soldiers cost money. */
+export const draftCap = (s: GameState, nation: string) => COUNTRY[nation].army + draft(s, nation) * 8;
+
+/** One-off spoils for taking a region: its treasury and some of its people. */
+export const trophies = (region: string) => ({ money: REGION[region].eco * 2, army: REGION[region].men * 3 });
+
 /** Player income before upkeep and one-turn modifiers. */
 export const grossIncome = (s: GameState) => Math.round(baseIncome(s, s.player) * incomeMul(s) * stabilityFactor(s));
 export const netIncome = (s: GameState) => Math.round(grossIncome(s) * s.turnIncomeMul) - upkeep(s);
@@ -119,9 +127,16 @@ export function battle(s: GameState, attacker: string, target: string, roll = Ma
     addArmy(s, attacker, -Math.min(armyOf(s, attacker), def * 0.5));
     addArmy(s, defender, -att * 0.15);
   }
+  let loot = { money: 0, army: 0 };
+  if (won) {
+    loot = trophies(target);
+    addArmy(s, attacker, loot.army);
+    if (attacker === s.player) s.money += loot.money;
+    else s.ai[attacker].money += loot.money;
+  }
   const eliminated = won && !alive(s, defender);
   if (eliminated && defender !== s.player) s.ai[defender].army = 0;
-  return { won, defender, eliminated };
+  return { won, defender, eliminated, loot };
 }
 
 export function attack(s: GameState, target: string, roll = Math.random()): 'win' | 'loss' | null {
@@ -134,7 +149,8 @@ export function attack(s: GameState, target: string, roll = Math.random()): 'win
   if (r.won) {
     s.stability = clamp(s.stability - 4 - warWeariness, 0, 100);
     shiftParty(s.parties[s.player], 'nat', 3);
-    log(s, `Захвачено: ${name}`, 'good');
+    const spoils = [r.loot.money ? `+${r.loot.money} денег` : '', r.loot.army ? `+${r.loot.army} армии` : ''].filter(Boolean).join(', ');
+    log(s, `Захвачено: ${name}${spoils ? `. Трофеи: ${spoils}` : ''}`, 'good');
     if (r.eliminated) log(s, `${COUNTRY[r.defender].name} больше не существует`, 'good');
     else if (CAPITAL[r.defender] === target) {
       log(s, `Взята столица страны ${COUNTRY[r.defender].name}! Удержите её ${CAPITULATE_AFTER} хода, и страна капитулирует`, 'good');
@@ -230,6 +246,8 @@ export function holdElections(s: GameState) {
 export function endTurn(s: GameState) {
   const income = netIncome(s);
   s.money += income;
+  const cap = draftCap(s, s.player);
+  if (s.army < cap) s.army = Math.min(cap, s.army + draft(s, s.player));
   if (s.money < 0) {
     // unpaid soldiers desert
     const lost = Math.min(s.army, Math.ceil(-s.money / 5));

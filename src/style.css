@@ -75,6 +75,11 @@ img { display: block; }
   stroke-linejoin: round; transition: filter .15s, fill .4s;
 }
 .map .nations path { fill: none; stroke: #0b1424; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; stroke-linejoin: round; }
+.map .yields { pointer-events: none; }
+.map .y-money circle { fill: #f0b94d; stroke: #2b1d04; stroke-width: 1.2; }
+.map .y-money circle.inner { fill: none; stroke: #8a5a10; stroke-width: 1.2; }
+.map .y-men circle { fill: #d6564d; stroke: #3a0f0c; stroke-width: 1.2; }
+.map .y-men path { fill: none; stroke: #fff; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .map .capitals { pointer-events: none; }
 .map .cap circle { fill: #d6403a; stroke: #fff; stroke-width: 1.6; }
 .map .cap path { fill: #fff; }
@@ -167,6 +172,16 @@ body[data-mode="pick"] .hud, body[data-mode="pick"] .decisions { display: none; 
 .trait b { display: block; color: var(--gold); font-size: 14px; margin: 2px 0; }
 
 .actions { display: flex; flex-direction: column; gap: 8px; }
+.yield { padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.yield.industry { border-color: rgba(240,185,77,.4); }
+.yield.manpower { border-color: rgba(214,86,77,.45); }
+.yield.hub { border-color: rgba(176,140,240,.45); }
+.yield-head { display: flex; flex-direction: column; gap: 1px; font-size: 13px; }
+.yield-head .muted { font-size: 12px; }
+.yield-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 99px; font-size: 12.5px; font-weight: 700; }
+.chip.money { background: rgba(240,185,77,.14); color: var(--gold); }
+.chip.men { background: rgba(214,86,77,.16); color: #ff9a92; }
 .threat { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; font-size: 12.5px; font-weight: 600; border: 1px solid; }
 .threat.bad { color: #ffaaa5; background: rgba(226,87,76,.12); border-color: rgba(226,87,76,.4); }
 .threat.mid { color: #f3d27f; background: rgba(240,185,77,.1); border-color: rgba(240,185,77,.35); }

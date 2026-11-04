@@ -1,13 +1,13 @@
 import { COUNTRIES, COUNTRY, PARTIES, flagUrl, type CountryDef } from '../data/countries';
 import { TRAITS } from '../data/traits';
 import { buildGraph, seaPairs } from '../game/graph';
-import { CAPITAL, REGION, REGIONS, regionTitle, regionsOf } from '../data/regions';
+import { CAPITAL, KIND_INFO, REGION, REGIONS, regionTitle, regionsOf } from '../data/regions';
 import { CARD, drawHand, playCard } from '../game/cards';
 import {
   type GameState, CAPITULATE_AFTER, PLAYER_SAFE_UNTIL, armyOf, clearSave, load, newGame, owned, ownedBy, save, season, trait,
 } from '../game/state';
 import {
-  RECRUIT_SIZE, annex, annexCost, attack, attackPower, canAnnexHere, chanceOf, defensePower, endTurn, front,
+  RECRUIT_SIZE, annex, annexCost, attack, draft, draftCap, trophies, attackPower, canAnnexHere, chanceOf, defensePower, endTurn, front,
   grossIncome, influenceGain, maxAttacks, netIncome, recruit, recruitCost, upkeep, winChance,
 } from '../game/rules';
 import {
@@ -100,7 +100,8 @@ export class App {
           <div class="stat">${icon('swords', 16)}<span>Армия</span><b>${p.army}</b></div>
           <div class="stat">${icon('coins', 16)}<span>Доход</span><b>${p.eco}</b></div>
         </div>
-        <div class="muted small">Областей: ${regionsOf(p.code).length}. Столица: ${REGION[CAPITAL[p.code]].name}</div>
+        <div class="muted small">Областей: ${regionsOf(p.code).length}. Столица: ${REGION[CAPITAL[p.code]].name}.
+          Призыв: +${regionsOf(p.code).reduce((a, r) => a + r.men, 0)} солдат за ход</div>
         <div class="trait"><div class="muted small">Особенность</div><b>${TRAITS[p.trait].name}</b><div>${TRAITS[p.trait].text}</div></div>
         ${politicsBlock([...p.parties], topPartyOf(p), p.gov)}
         <button class="btn primary wide" id="play">Играть: ${p.name}</button>
@@ -223,8 +224,8 @@ export class App {
       <div class="resources">
         <div class="res" title="Деньги. За ход: ${signed(net)} (доход ${fmt(grossIncome(s) * s.turnIncomeMul)}, содержание армии −${upkeep(s)})">
           <span class="ri money">${icon('coins')}</span><b>${fmt(s.money)}</b><small class="${net >= 0 ? 'up' : 'down'}">${signed(net)}</small></div>
-        <div class="res" title="Армия. Содержание: ${upkeep(s)} денег за ход">
-          <span class="ri army">${icon('swords')}</span><b>${fmt(s.army)}</b></div>
+        <div class="res" title="Армия. Призыв из ваших областей: +${draft(s, s.player)} за ход, пока армия меньше ${draftCap(s, s.player)}. Содержание: ${upkeep(s)} денег за ход">
+          <span class="ri army">${icon('swords')}</span><b>${fmt(s.army)}</b>${s.army < draftCap(s, s.player) ? `<small class="up">+${draft(s, s.player)}</small>` : ""}</div>
         <div class="res ${s.stability < 30 ? 'warn' : ''}" title="Стабильность. Доход умножается на ${Math.round((0.5 + s.stability / 200) * 100)}%. Ниже 45% начинаются протесты, ниже 20% — революция">
           <span class="ri stab">${icon('smile')}</span><b>${s.stability}%</b>
           <span class="meter"><i style="width:${s.stability}%"></i></span></div>
@@ -329,11 +330,19 @@ export class App {
         <img src="${flagUrl(ownerCode)}" alt="Флаг: ${COUNTRY[ownerCode].name}" class="flag-l">
         <div><h2>${region.capital ? `${icon('star', 16)} ` : ''}${title}</h2><div class="muted">${status}</div></div>
       </div>
+      <div class="yield ${region.kind}">
+        <div class="yield-head"><b>${KIND_INFO[region.kind].name}</b><span class="muted">${KIND_INFO[region.kind].text}</span></div>
+        <div class="yield-row">
+          ${region.eco ? `<span class="chip money">${icon('coins', 14)} +${region.eco} денег/ход</span>` : ''}
+          ${region.men ? `<span class="chip men">${icon('users', 14)} +${region.men} солдат/ход</span>` : ''}
+        </div>
+        ${!mine ? `<div class="muted small">Трофеи при захвате: ${[trophies(code).money ? `+${trophies(code).money} денег` : '', trophies(code).army ? `+${trophies(code).army} армии` : ''].filter(Boolean).join(', ')}</div>` : ''}
+      </div>
       <div class="stats">
         <div class="stat">${icon('swords', 16)}<span>${armyLabel}</span><b>${fmt(armyValue)}</b></div>
-        <div class="stat">${icon('coins', 16)}<span>Доход области</span><b>${region.eco}</b></div>
+        <div class="stat">${icon('flag', 16)}<span>Областей</span><b>${lands}</b></div>
       </div>
-      <div class="muted small">${mine ? 'У вас' : `У страны ${COUNTRY[ownerCode].name}`} областей: ${lands}. Армия защищает их все, потеря каждой ослабляет страну.</div>
+      <div class="muted small">Армия страны защищает все её области. Потеря каждой отнимает её деньги и солдат.</div>
       ${siege}
       <div class="trait"><div class="muted small">Особенность: ${homeland.name}</div><b>${tr.name}</b><div>${tr.text}</div></div>
       ${threat}
@@ -429,10 +438,12 @@ export class App {
     const s = this.s!;
     this.act(() => {
       const wasCapital = CAPITAL[s.owner[code]] === code;
+      const loot = trophies(code);
       const r = attack(s, code);
       if (r === 'win') play(wasCapital ? 'capital' : 'win');
       if (r === 'loss') play('loss');
-      if (r === 'win') this.toast(`Победа! Захвачено: ${regionTitle(code)}`, 'good');
+      const spoils = [loot.money ? `+${loot.money} денег` : '', loot.army ? `+${loot.army} армии` : ''].filter(Boolean).join(', ');
+      if (r === 'win') this.toast(`Победа! Захвачено: ${regionTitle(code)}${spoils ? `. Трофеи: ${spoils}` : ''}`, 'good');
       if (r === 'loss') this.toast(`Атака отбита: ${regionTitle(code)}`, 'bad');
     });
   }

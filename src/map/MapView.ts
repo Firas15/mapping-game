@@ -57,6 +57,7 @@ export class MapView {
   private pBorderHalo: Selection<SVGPathElement, unknown, null, undefined>;
   private pSelected: Selection<SVGPathElement, unknown, null, undefined>;
   private gCapitals: Selection<SVGGElement, unknown, null, undefined>;
+  private gYields: Selection<SVGGElement, unknown, null, undefined>;
   private gLabels: Selection<SVGGElement, unknown, null, undefined>;
 
   constructor(host: HTMLElement, topo: unknown, onSelect: (region: string | null) => void) {
@@ -93,6 +94,7 @@ export class MapView {
     this.pBorderHalo = this.root.append('path').attr('class', 'player-halo');
     this.pBorder = this.root.append('path').attr('class', 'player-border');
     this.pSelected = this.root.append('path').attr('class', 'selected');
+    this.gYields = this.root.append('g').attr('class', 'yields');
     this.gCapitals = this.root.append('g').attr('class', 'capitals');
     this.gLabels = this.root.append('g').attr('class', 'labels');
 
@@ -152,7 +154,37 @@ export class MapView {
       .attr('d', (f) => this.path(f))
       .on('click', (e: MouseEvent, f) => { e.stopPropagation(); this.onSelect(f.id); });
     this.drawSeaLinks();
+    this.drawYields();
     this.update(this.state);
+  }
+
+  /** What each region gives: gold coin for money, red chevron for soldiers. */
+  private drawYields() {
+    const g = this.gYields.selectAll<SVGGElement, RegionFeature>('g.yield').data(this.regions, (f) => f.id)
+      .join((enter) => {
+        const e = enter.append('g').attr('class', 'yield');
+        e.each(function (f) {
+          const r = REGION[f.id];
+          const icons: string[] = [];
+          if (r.kind !== 'manpower') icons.push('money');
+          if (r.men > 0) icons.push('men');
+          const sel = select(this);
+          icons.forEach((kind, i) => {
+            const x = (i - (icons.length - 1) / 2) * 13;
+            const ic = sel.append('g').attr('class', `y-${kind}`).attr('transform', `translate(${x},0)`);
+            ic.append('circle').attr('r', 5.5);
+            if (kind === 'money') ic.append('circle').attr('class', 'inner').attr('r', 2.6);
+            else ic.append('path').attr('d', 'M-3,-0.5 L0,-3 L3,-0.5 M-3,2.5 L0,0 L3,2.5');
+          });
+          sel.append('title').text(`${r.name}: ${r.eco} денег и ${r.men} солдат за ход`);
+        });
+        return e;
+      });
+    g.each((f, i, nodes) => {
+      const [x, y] = this.xy(f.id);
+      nodes[i].dataset.x = String(x);
+      nodes[i].dataset.y = String(y);
+    });
   }
 
   private xy(id: string) {
@@ -275,6 +307,15 @@ export class MapView {
   /** Overlays keep their screen size; labels hide where they don't fit. */
   private placeOverlays() {
     const k = this.t.k;
+    // yields only when zoomed in enough to read them
+    const showYields = k >= 2.2;
+    this.gYields.style('display', showYields ? 'inline' : 'none');
+    if (showYields) {
+      this.gYields.selectAll<SVGGElement, unknown>('g.yield').each((_, i, nodes) => {
+        const n = nodes[i];
+        n.setAttribute('transform', `translate(${n.dataset.x},${Number(n.dataset.y) - 6 / k}) scale(${1 / k})`);
+      });
+    }
     this.gCapitals.selectAll<SVGGElement, unknown>('g.cap').each((_, i, nodes) => {
       const n = nodes[i];
       n.setAttribute('transform', `translate(${n.dataset.x},${n.dataset.y}) scale(${1 / k})`);

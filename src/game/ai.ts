@@ -2,7 +2,7 @@ import { COUNTRIES, COUNTRY } from '../data/countries';
 import { REGIONS, regionTitle } from '../data/regions';
 import { type GameState, PLAYER_SAFE_UNTIL, WAR_STARTS, alive, fx, owned } from './state';
 import {
-  RECRUIT_SIZE, baseIncome, battle, chanceOf, clamp, frontOf, log, recruitCostOf, shiftParty, upkeepOf,
+  RECRUIT_SIZE, baseIncome, battle, draft, chanceOf, clamp, frontOf, log, recruitCostOf, shiftParty, upkeepOf,
 } from './rules';
 import { changeRelation, isAlly, relation } from './diplomacy';
 
@@ -13,13 +13,15 @@ const NERVE = { nat: 62, con: 68, soc: 70, dem: 78 } as const;
 
 /** Army a computer country is willing to keep. Grows with its land. */
 export const armyCap = (s: GameState, nation: string) =>
-  Math.round(COUNTRY[nation].army * 1.3 + baseIncome(s, nation) * 0.4);
+  Math.round(COUNTRY[nation].army * 1.3 + baseIncome(s, nation) * 0.4 + draft(s, nation) * 4);
 
 function economy(s: GameState, nation: string) {
   const n = s.ai[nation];
   // 0.85 matches a player with average stability
   const income = Math.round(baseIncome(s, nation) * (1 + (fx(nation).incomeMul ?? 0)) * 0.85);
   n.money += income - upkeepOf(n.army);
+  // conscripts from its regions, up to what it is willing to keep
+  if (n.army < armyCap(s, nation)) n.army += draft(s, nation);
   if (n.money < 0) {
     n.army = Math.max(0, n.army + Math.floor(n.money / 5));
     n.money = 0;
@@ -53,7 +55,7 @@ function pickTarget(s: GameState, nation: string): string | null {
     // capitals end wars; lost home regions are worth taking back
     const capital = x.capital && x.c === defender ? 15 : 0;
     const homecoming = x.c === nation ? 25 : 0;
-    const score = chance + x.eco * 0.5 + threat + capital + homecoming + Math.random() * 10;
+    const score = chance + x.eco * 0.5 + x.men * 3 + threat + capital + homecoming + Math.random() * 10;
     if (score > bestScore) {
       bestScore = score;
       best = target;
