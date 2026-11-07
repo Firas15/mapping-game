@@ -465,6 +465,7 @@ export class HowTo {
   private i = 0;
   private anims: Animation[] = [];
   private onTutorial: (() => void) | null = null;
+  private onClose: (() => void) | null = null;
   private keys = (e: KeyboardEvent) => {
     if (!this.el.classList.contains('open')) return;
     if (e.key === 'ArrowRight') this.go(this.i + 1);
@@ -477,8 +478,9 @@ export class HowTo {
     window.addEventListener('keydown', this.keys);
   }
 
-  open(onTutorial?: () => void) {
+  open(onTutorial?: () => void, onClose?: () => void) {
     this.onTutorial = onTutorial ?? null;
+    this.onClose = onClose ?? null;
     this.el.innerHTML = `
       <div class="ht-box" role="dialog" aria-modal="true" aria-labelledby="ht-title">
         <nav class="ht-nav" aria-label="Разделы">
@@ -521,6 +523,9 @@ export class HowTo {
     this.anims = [];
     this.el.classList.remove('open');
     this.el.innerHTML = '';
+    const cb = this.onClose;
+    this.onClose = null;
+    cb?.();
   }
 
   private go(i: number, first = false) {

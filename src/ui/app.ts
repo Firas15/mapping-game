@@ -37,6 +37,7 @@ import { Tutorial, tutorialDone } from './tutorial';
 import { isMuted, play, setMuted } from './sound';
 import { Menu } from './menu';
 import { HowTo } from './howto';
+import { breakAd, gameplay } from '../platform';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const fmt = (n: number) => Math.round(n).toLocaleString('ru-RU');
@@ -131,6 +132,7 @@ export class App {
   // ---------- main menu ----------
 
   private showMenu() {
+    gameplay(false);
     if (this.s) save(this.s);
     this.s = null;
     this.unitSel = null;
@@ -138,7 +140,11 @@ export class App {
     this.closeModal();
     this.menu.open({
       saved: load(),
-      onContinue: () => { this.s = load(); if (this.s) this.enterGame(); else this.showStart(); },
+      onContinue: async () => {
+        await breakAd();
+        this.s = load();
+        if (this.s) this.enterGame(); else this.showStart();
+      },
       onNew: () => this.showStart(),
       onHowTo: () => this.howto.open(),
     }, {
@@ -151,6 +157,7 @@ export class App {
   // ---------- start screen ----------
 
   private showStart() {
+    gameplay(false);
     this.menu.close();
     this.s = null;
     this.unitSel = null;
@@ -231,7 +238,8 @@ export class App {
     if (cont && saved) cont.onclick = () => { this.s = saved; this.enterGame(); };
   }
 
-  private startGame(code: string) {
+  private async startGame(code: string) {
+    await breakAd();
     play('turn');
     this.s = newGame(code, drawHand(), { ...this.settings });
     save(this.s);
@@ -241,6 +249,7 @@ export class App {
 
   private enterGame() {
     document.body.dataset.mode = 'game';
+    gameplay(true);
     this.selected = this.home();
     this.unitSel = null;
     this.journalSeen = this.s!.log.length;
@@ -616,7 +625,11 @@ export class App {
     $('#goals').onclick = () => this.showGoals();
     $('#upgrades').onclick = () => this.showUpgrades();
     $('#rank').onclick = () => this.showRanking();
-    $('#help').onclick = () => this.howto.open(() => this.tutorial.start());
+    $('#help').onclick = () => {
+      // the lessons are a menu: gameplay stops while they're open
+      gameplay(false);
+      this.howto.open(() => this.tutorial.start(), () => { if (this.s && document.body.dataset.mode === 'game') gameplay(true); });
+    };
     $('#menu').onclick = () => this.showMenu();
   }
 
@@ -955,6 +968,8 @@ export class App {
     const s = this.s!;
     if (this.cinematic || this.busy) return;
     this.busy = true;
+    // between turns is a natural break for an ad (the platform limits how often)
+    await breakAd();
     this.unitSel = null;
     this.target = null;
     const before = { ...s.owner };
@@ -1256,6 +1271,7 @@ export class App {
   private showEnd() {
     const s = this.s!;
     if ($('#modal').classList.contains('open') && $('#modal').querySelector('.end-card')) return;
+    gameplay(false);
     play(s.won ? 'victory' : 'defeat');
     const m = this.modal(endHtml(s), 'end-card');
     m.querySelector<HTMLButtonElement>('[data-m="new"]')!.onclick = () => {

@@ -18,9 +18,24 @@ export function setMuted(m: boolean) {
   if (master) master.gain.value = m ? 0 : 0.5;
 }
 
+// Silence while the tab is hidden, the window lost focus or the platform paused
+// us (ads). Several reasons can overlap; sound comes back when all are gone.
+const quiet = new Set<string>();
+export function setQuiet(reason: string, on: boolean) {
+  if (on) quiet.add(reason); else quiet.delete(reason);
+  if (!ctx) return;
+  if (quiet.size) void ctx.suspend();
+  else void ctx.resume();
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => setQuiet('hidden', document.hidden));
+  window.addEventListener('blur', () => setQuiet('blur', true));
+  window.addEventListener('focus', () => setQuiet('blur', false));
+}
+
 /** Browsers only allow sound after a click, so the context starts lazily. */
 function audio(): { ac: AudioContext; out: GainNode } | null {
-  if (muted) return null;
+  if (muted || quiet.size) return null;
   try {
     if (!ctx) {
       ctx = new AudioContext();

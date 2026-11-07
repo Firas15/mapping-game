@@ -11,13 +11,13 @@
 .map .unit.air .glyph, .map .unit.army .glyph { fill: #fff; stroke: none; }
 .map .unit.join .halo { stroke: #f0b94d; stroke-width: 2.5; fill: rgba(240, 185, 77, .18); }
 .map .unit.fleet .glyph { fill: #fff; stroke: #fff; stroke-width: 1.2; }
-.map .unit .num { font: 800 11.5px Manrope, sans-serif; fill: #fff; paint-order: stroke; stroke: rgba(8, 14, 26, .75); stroke-width: 2.6px; }
+.map .unit .num { font: 800 11.5px 'Manrope Variable', sans-serif; fill: #fff; paint-order: stroke; stroke: rgba(8, 14, 26, .75); stroke-width: 2.6px; }
 .map .unit.acted { opacity: .55; }
 .map .unit:hover .plate { filter: brightness(1.2); }
 .map .units.far .unit:not(.mine) { display: none; }
 
 .map .sea-names { pointer-events: none; }
-.map .sea-name text { font: italic 600 11px Manrope, sans-serif; fill: #4d6a99; letter-spacing: .04em; }
+.map .sea-name text { font: italic 600 11px 'Manrope Variable', sans-serif; fill: #4d6a99; letter-spacing: .04em; }
 .map .cap.temp circle { fill: #2b2f3a; stroke: #ff8a7a; stroke-dasharray: 2 2; }
 .map .cap.temp path { fill: #ff8a7a; }
 
@@ -25,7 +25,7 @@
 .map .order.move circle { fill: #2f7a52; stroke: #b7f0cf; stroke-width: 1.6; }
 .map .order.move path, .map .order.zone path { fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .map .order.attack rect { stroke: #0b1424; stroke-width: 1.6; }
-.map .order.attack text { font: 800 11.5px Manrope, sans-serif; fill: #1a0d05; }
+.map .order.attack text { font: 800 11.5px 'Manrope Variable', sans-serif; fill: #1a0d05; }
 .map .order.attack.good rect { fill: #6fd59a; }
 .map .order.attack.mid rect { fill: #f0c75a; }
 .map .order.attack.bad rect { fill: #f08a80; }
@@ -48,7 +48,7 @@ body[data-mode="pick"] #modes, body[data-mode="pick"] #journal { display: none; 
 
 #journal { position: absolute; left: 16px; bottom: 16px; z-index: 4; display: flex; flex-direction: column-reverse; align-items: flex-start; gap: 8px; max-width: 360px; }
 .journal-btn { position: relative; background: rgba(18, 31, 53, .97); }
-.journal-btn i { position: absolute; top: -6px; right: -6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--danger); color: #fff; font: 800 11px/20px Manrope, sans-serif; font-style: normal; text-align: center; }
+.journal-btn i { position: absolute; top: -6px; right: -6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--danger); color: #fff; font: 800 11px/20px 'Manrope Variable', sans-serif; font-style: normal; text-align: center; }
 .journal-list { display: none; max-height: 46vh; overflow-y: auto; width: 340px; padding: 10px 12px; border-radius: 14px; background: rgba(18, 31, 53, .98); border: 1px solid var(--line-2); box-shadow: 0 12px 30px rgba(0, 0, 0, .4); scrollbar-width: thin; }
 body.journal-open .journal-list { display: block; }
 .j-filter { display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--bg); margin-bottom: 8px; width: fit-content; }
@@ -156,7 +156,7 @@ details.more > * + * { margin-top: 10px; }
 .chart { width: 100%; height: auto; margin-top: 4px; }
 .chart path { fill: none; stroke-width: 3; stroke-linejoin: round; }
 .chart path.rival { stroke: #5d6f8f; stroke-dasharray: 5 4; stroke-width: 2; }
-.chart text { font: 11px Manrope, sans-serif; fill: var(--muted); }
+.chart text { font: 11px 'Manrope Variable', sans-serif; fill: var(--muted); }
 .chart-legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
 .chart-legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
 .chart-legend i.rival { background: #5d6f8f; }
@@ -230,3 +230,8 @@ details.more > * + * { margin-top: 10px; }
 .course.open:hover { background: var(--surface-2); border-color: var(--gold); }
 .course.on { border-color: var(--gold); background: rgba(240, 185, 77, .1); }
 .course-tag { margin-top: 4px; font-size: 11px; font-weight: 800; color: var(--gold); text-transform: uppercase; letter-spacing: .06em; }
+
+/* narrow desktop windows: map modes shrink to icons so the side panel never covers them */
+@media (max-width: 1240px) and (min-width: 821px) {
+  body[data-mode="game"] .mode-btn span { display: none; }
+}

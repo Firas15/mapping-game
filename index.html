@@ -9,15 +9,12 @@
     <title>Mapping</title>
     <!-- the map is the biggest file: start downloading it right away, next to the code -->
     <link rel="preload" href="./europe.json" as="fetch" crossorigin />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;700;800&display=swap" rel="stylesheet" />
     <style>
       /* splash: shown before any script or stylesheet arrives */
-      #splash { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #0b1424; color: #e8eef7; font-family: Manrope, system-ui, sans-serif; transition: opacity .45s; }
+      #splash { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #0b1424; color: #e8eef7; font-family: 'Manrope Variable', system-ui, sans-serif; transition: opacity .45s; }
       #splash.gone { opacity: 0; pointer-events: none; }
       .splash-in { width: min(320px, calc(100% - 48px)); text-align: center; }
-      .splash-logo { font: 800 34px/1 Unbounded, Manrope, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+      .splash-logo { font: 800 34px/1 'Unbounded Variable', 'Manrope Variable', system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
       .splash-logo span { color: #f0b94d; }
       .splash-track { margin: 22px auto 12px; height: 4px; border-radius: 4px; background: #182843; overflow: hidden; }
       #splash-bar { display: block; height: 100%; background: #f0b94d; transform: scaleX(.04); transform-origin: left; transition: transform .2s; }

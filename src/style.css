@@ -18,14 +18,16 @@
   --radius: 12px;
   --hud-h: 64px;
   color-scheme: dark;
-  font-family: Manrope, system-ui, sans-serif;
+  font-family: 'Manrope Variable', system-ui, sans-serif;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; overflow: hidden; }
+html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
+/* a game, not a document: no text selection, long-tap menus or tap flashes */
+body { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr auto; height: 100dvh; background: var(--bg); }
 h1, h2, h3 { margin: 0; letter-spacing: -0.01em; }
 button { font: inherit; color: inherit; }
@@ -104,7 +106,7 @@ body.cinematic .decisions, body.cinematic .panel, body.cinematic .hud { pointer-
 .map .cap.occupied circle { fill: #2b2f3a; stroke: #f0b94d; animation: capwarn 1.2s ease-in-out infinite; }
 .map .cap.occupied path { fill: #f0b94d; }
 .map .cap-left {
-  font: 800 12px Manrope, sans-serif; fill: #f0b94d; paint-order: stroke;
+  font: 800 12px 'Manrope Variable', sans-serif; fill: #f0b94d; paint-order: stroke;
   stroke: rgba(8, 14, 26, .9); stroke-width: 3px;
 }
 @keyframes capwarn { 50% { stroke-width: 3.2; } }
@@ -129,7 +131,7 @@ body.cinematic .decisions, body.cinematic .panel, body.cinematic .hud { pointer-
 }
 .map .labels { pointer-events: none; }
 .map .label text {
-  font: 700 12.5px Manrope, sans-serif; fill: #fff; paint-order: stroke;
+  font: 700 12.5px 'Manrope Variable', sans-serif; fill: #fff; paint-order: stroke;
   stroke: rgba(8, 14, 26, .82); stroke-width: 3.2px; stroke-linejoin: round;
 }
 .map .label image { outline: 1px solid rgba(0,0,0,.4); }
@@ -264,8 +266,8 @@ body[data-mode="pick"] .hud, body[data-mode="pick"] .decisions { display: none; 
 .politics-body { display: flex; gap: 14px; align-items: center; }
 .donut { width: 92px; height: 92px; flex: none; }
 .donut circle { transition: stroke-dasharray .5s, stroke-dashoffset .5s; }
-.donut-k { font-size: 8px; fill: var(--muted); font-family: Manrope, sans-serif; }
-.donut-v { font-size: 15px; font-weight: 800; font-family: Manrope, sans-serif; }
+.donut-k { font-size: 8px; fill: var(--muted); font-family: 'Manrope Variable', sans-serif; }
+.donut-v { font-size: 15px; font-weight: 800; font-family: 'Manrope Variable', sans-serif; }
 .legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; flex: 1; font-size: 13px; }
 .legend li { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .legend li.ruling { color: var(--text); font-weight: 700; }

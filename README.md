@@ -37,6 +37,7 @@ npm run dev
 ```
 
 - `npm run build` — сборка в `dist/`
+- `npm run build:yandex` — сборка для Яндекс Игр с SDK и архив `mapping-yandex.zip` (подробности в [docs/yandex-games.md](docs/yandex-games.md))
 - `npm run sim -- DE,FR,PL 60 8 normal` — компьютер играет партии за эти страны, для проверки баланса (`BOT=human` — за игрока играет агрессивный бот)
 - `npm run build:map` — пересобрать карту `public/europe.json` из Natural Earth 1:10m: провинции и их владельцы, население, горные хребты и реки (скачиваются один раз в `.cache/`). Карта грузится отдельно от кода, под заставкой.
 - `npx tsx scripts/links-report.ts` — морские переправы и проверка, что до каждой области можно добраться
@@ -44,4 +45,4 @@ npm run dev
 
 Каждый пуш в `main` выкладывает игру на GitHub Pages.
 
-Стек: TypeScript, Vite, d3-geo, d3-zoom, topojson. Карта — Natural Earth, флаги — [flag-icons](https://github.com/lipis/flag-icons) (MIT), иконки — [Lucide](https://lucide.dev).
+Стек: TypeScript, Vite, d3-geo, d3-zoom, topojson. Карта — Natural Earth, флаги — [flag-icons](https://github.com/lipis/flag-icons) (MIT), иконки — [Lucide](https://lucide.dev), шрифты Manrope и Unbounded (OFL) встроены.
