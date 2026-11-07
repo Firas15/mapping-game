@@ -6,7 +6,7 @@ import {
 import { land, neighbours, sea } from './graph';
 import {
   airStrike, airTargets, atWar, canAttackRegion, cantDeclare, chance, crossing, declareWar, enemiesOf, fleetMoves,
-  friends, landBattle, makePeace, moveFleet, seaBlocked,
+  friends, landBattle, makePeace, moveFleet, seaBlocked, splitArmy,
 } from './war';
 import {
   armyTotal, build, canRaiseIn, draft, draftCap, maxArmies, price, reinforce, removeTroops, upkeepOf,
@@ -92,15 +92,18 @@ function production(s: GameState, n: string) {
   if (spot && armies.length < maxArmies(s, n) && !armiesAt(s, spot, n).length && m.money >= price(s, n, 'army') + reserve && armyTotal(s, n) < cap) {
     build(s, n, 'army', spot);
   }
-  // top up the armies on the most threatened ground
+  // top up the armies on the most threatened ground; each top-up lowers that
+  // spot's need, so the money spreads instead of feeding one big stack
+  const added = new Map<string, number>();
   for (let guard = 0; guard < (vsPlayer ? 14 : 8); guard++) {
     if (m.money < price(s, n, 'reinforce') + reserve || armyTotal(s, n) >= cap) break;
     const onFront = unitsOf(s, n, 'army').filter((u) => s.owner[u.at] === n);
     if (!onFront.length) break;
-    const needOf = (u: Unit) => front.find((x) => x.r === u.at)?.need ?? -99;
+    const needOf = (u: Unit) => (front.find((x) => x.r === u.at)?.need ?? -99) - (added.get(u.at) ?? 0);
     const pick = onFront.sort((a, b) => needOf(b) - needOf(a) || a.str - b.str)[0];
     m.money -= price(s, n, 'reinforce');
     pick.str += 10;
+    added.set(pick.at, (added.get(pick.at) ?? 0) + 10);
   }
   // ships for coastal countries with enemies across the water, planes once rich enough
   const coastal = ownedBy(s, n).filter((r) => REGION[r].coast.length && canRaiseIn(s, n, r));
@@ -253,6 +256,7 @@ function counterattack(s: GameState, n: string, u: Unit, enemies: Set<string>) {
   }
   if (!best) return false;
   const defender = s.owner[best];
+  leaveGarrison(s, n, u, best, enemies);
   const res = landBattle(s, u, best);
   s.events.push({ attacker: n, defender, target: best, won: res.won, eliminated: res.eliminated });
   if (defender === s.player) {
@@ -261,6 +265,76 @@ function counterattack(s: GameState, n: string, u: Unit, enemies: Set<string>) {
   }
   if (res.eliminated) log(s, `${COUNTRY[defender].name} больше не существует`, defender === s.player ? 'bad' : 'info');
   return true;
+}
+
+// ---------- spreading out ----------
+// Without this every army ends up in one big stack and the rest of the border
+// stands empty. Each region facing an enemy wants a garrison sized to the
+// threat next to it; surplus troops are split off and sent there.
+
+/** How much of the army goes to garrisons, and how big a garrison is per enemy soldier next door. */
+export const SPREAD = { share: 0.6, perThreat: 0.6 };
+
+/** Enemy strength next to `r` (ignoring region `skip`), plus a little for any enemy land. */
+function threatAt(s: GameState, r: string, enemies: Set<string>, skip?: string) {
+  let t = 0;
+  for (const m of neighbours(r)) {
+    if (m === skip || !enemies.has(s.owner[m])) continue;
+    t += 6 + armiesAt(s, m, s.owner[m]).reduce((a, u) => a + u.str, 0);
+  }
+  return t;
+}
+
+/** Troops each region facing the enemy should hold, scaled to what the country has. */
+function garrisonWants(s: GameState, n: string, enemies: Set<string>) {
+  const wants = new Map<string, number>();
+  for (const r of ownedBy(s, n)) {
+    const t = threatAt(s, r, enemies);
+    if (!t) continue;
+    wants.set(r, Math.max(6, t * SPREAD.perThreat) * (s.capital[n] === r ? 1.4 : 1));
+  }
+  const total = armyTotal(s, n);
+  const sum = [...wants.values()].reduce((a, b) => a + b, 0);
+  // keep a share free for attacks
+  if (sum > total * SPREAD.share) for (const [r, w] of wants) wants.set(r, (w * total * SPREAD.share) / sum);
+  return wants;
+}
+
+const strHere = (s: GameState, r: string, n: string) => armiesAt(s, r, n).reduce((a, u) => a + u.str, 0);
+
+/** Before attacking out of a border region, leave a garrison for the other enemies next door. */
+function leaveGarrison(s: GameState, n: string, u: Unit, target: string, enemies: Set<string>) {
+  const t = threatAt(s, u.at, enemies, target);
+  if (!t) return;
+  const others = strHere(s, u.at, n) - u.str;
+  const stay = Math.round(Math.min(u.str * 0.4, Math.max(6, t * 0.6) - others));
+  // the garrison still joins the attack from where it stands, it just doesn't move in
+  if (stay >= 5) splitArmy(s, u, stay);
+}
+
+/** Splits surplus troops off big stacks and sends them to empty or thin border regions. */
+function spreadArmies(s: GameState, n: string, enemies: Set<string>) {
+  const wants = garrisonWants(s, n, enemies);
+  const gaps = [...wants].filter(([r, w]) => strHere(s, r, n) < w * 0.6).sort((a, b) => b[1] - a[1]);
+  for (const [r, w] of gaps) {
+    const donor = unitsOf(s, n, 'army')
+      .filter((u) => !u.acted && u.at !== r && s.units.includes(u))
+      .map((u) => ({ u, surplus: Math.min(u.str, strHere(s, u.at, n) - (wants.get(u.at) ?? 0) * 1.2), steps: stepsTo(s, n, u.at, r, 3) }))
+      .filter((x) => x.surplus >= 8 && x.steps <= 3)
+      .sort((a, b) => a.steps - b.steps || b.surplus - a.surplus)[0];
+    if (!donor) continue;
+    const send = Math.round(Math.min(donor.surplus, Math.max(6, w - strHere(s, r, n))));
+    const part = send >= donor.u.str ? donor.u : splitArmy(s, donor.u, send);
+    const step = stepToward(s, n, part.at, r);
+    if (step && crossing(part.at, step)) {
+      part.at = step;
+      part.acted = true;
+    } else if (part !== donor.u) {
+      // no way through: fold the troops back
+      donor.u.str += part.str;
+      s.units = s.units.filter((x) => x !== part);
+    }
+  }
 }
 
 function actArmies(s: GameState, n: string) {
@@ -289,7 +363,13 @@ function actArmies(s: GameState, n: string) {
       for (const helper of helpers) {
         busy.add(helper.u.id);
         const step = stepToward(s, n, helper.u.at, d.r);
-        if (step && crossing(helper.u.at, step)) { helper.u.at = step; helper.u.acted = true; }
+        if (!step || !crossing(helper.u.at, step)) continue;
+        // an army that guards a border itself sends half and keeps the rest home
+        const mover = threatAt(s, helper.u.at, enemies) && helper.u.str >= 12
+          ? splitArmy(s, helper.u, Math.round(helper.u.str / 2)) : helper.u;
+        mover.at = step;
+        mover.acted = true;
+        busy.add(mover.id);
       }
     }
   }
@@ -316,6 +396,7 @@ function actArmies(s: GameState, n: string) {
       }
       if (!best || bestScore < 40) continue;
       const defender = s.owner[best];
+      leaveGarrison(s, n, u, best, enemies);
       const res = landBattle(s, u, best);
       s.events.push({ attacker: n, defender, target: best, won: res.won, eliminated: res.eliminated });
       if (defender === s.player) {
@@ -326,7 +407,10 @@ function actArmies(s: GameState, n: string) {
     }
   }
 
-  // 3. the rest walk to the front, the part of it nearest home first
+  // 3. cover the whole border, not just one spot
+  if (enemies.size) spreadArmies(s, n, enemies);
+
+  // 4. the rest walk to the front, the part of it nearest home first
   const front = frontier(s, n);
   const assigned = new Map<string, number>();
   for (const u of armies().sort((a, b) => b.str - a.str)) {

@@ -85,6 +85,25 @@ function humanTurn(s: ReturnType<typeof newGame>, n: string) {
   }
 }
 
+// How computer countries at war spread their armies: share of the army in the
+// biggest stack, and share of regions facing an enemy that have any army.
+const stackShare: number[] = [];
+const cover: number[] = [];
+function measureStacks(s: ReturnType<typeof newGame>) {
+  for (const c of COUNTRIES) {
+    const n = c.code;
+    if (n === s.player || !alive(s, n) || ownedBy(s, n).length < 3) continue;
+    const foes = new Set(enemiesOf(s, n));
+    if (!foes.size) continue;
+    const armies = s.units.filter((u) => u.owner === n && u.type === 'army');
+    const total = armies.reduce((a, u) => a + u.str, 0);
+    if (total < 20) continue;
+    stackShare.push(Math.max(...armies.map((u) => u.str)) / total);
+    const front = ownedBy(s, n).filter((r) => neighbours(r).some((m) => foes.has(s.owner[m])));
+    if (front.length) cover.push(front.filter((r) => armies.some((u) => u.at === r)).length / front.length);
+  }
+}
+
 function play(player: string) {
   const s = newGame(player, drawHand(), { difficulty: diff as Difficulty, short: false });
   for (let t = 0; t < turns && !s.lost && !s.won; t++) {
@@ -96,6 +115,7 @@ function play(player: string) {
     }
     if (HUMAN) humanTurn(s, player); else autoPlay(s, player);
     endTurn(s);
+    if (s.turn % 10 === 0) measureStacks(s);
   }
   return {
     res: s.won ? 'WON' : s.lost ? 'LOST' : 'ok', turn: s.turn, mine: owned(s).length, army: armyTotal(s, player),
@@ -115,4 +135,6 @@ for (const p of list.split(',')) {
   const avg = (f: (r: (typeof rs)[number]) => number) => (rs.reduce((a, r) => a + f(r), 0) / rs.length).toFixed(1);
   console.log(`${p}: won ${c('WON')} lost ${c('LOST')} ok ${c('ok')} | end t${avg((r) => r.turn)} regions ${avg((r) => r.mine)} army ${avg((r) => r.army)} nations ${avg((r) => r.alive)} coalition ${rs.filter((r) => r.coalition).length} | t20 ${avg((r) => r.at20)} t40 ${avg((r) => r.at40)} | battles won ${avg((r) => r.won)} lost ${avg((r) => r.beaten)}, regions lost ${avg((r) => r.lost)} | e.g. ${rs[0].top}`);
 }
+const mean = (xs: number[]) => (xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length) * 100).toFixed(0);
+console.log(`computer at war: biggest stack ${mean(stackShare)}% of the army, front regions with an army ${mean(cover)}%`);
 console.log(`${((Date.now() - t0) / 1000).toFixed(1)}s`);
